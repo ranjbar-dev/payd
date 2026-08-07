@@ -1,0 +1,10 @@
+# KEY-003: deployment-specific key material and encrypted seed.
+internal/seed/seed.key
+seed.age
+
+# Local runtime state.
+*.db
+*.db-shm
+*.db-wal
+payd.local.yaml
+
