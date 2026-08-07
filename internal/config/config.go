@@ -351,7 +351,7 @@ func (c Config) Validate() error {
 	positiveDuration("resources.check_interval", c.Resources.CheckInterval)
 	positiveDuration("resources.slow_check_interval", c.Resources.SlowCheckInterval)
 	decimalValue("resources.poll_threshold_usd", c.Resources.PollThresholdUSD, true)
-	add(c.Resources.MaxPolledAddresses > 0, "resources.max_polled_addresses must be positive")
+	add(c.Resources.MaxPolledAddresses > 0 && c.Resources.MaxPolledAddresses <= 50, "resources.max_polled_addresses must be 1..50 (RES-001a)")
 	add(c.Resources.ResourceWalletIndex >= 1000 && c.Resources.ResourceWalletIndex < 1<<31, "resources.resource_wallet_index must be in the operational range 1000..2^31-1 (CFG-013)")
 	add(c.Resources.BandwidthStrategy == "topup" || c.Resources.BandwidthStrategy == "delegate", "resources.bandwidth_strategy must be topup or delegate")
 	decimalValue("resources.bandwidth_topup_trx", c.Resources.BandwidthTopupTRX, true)

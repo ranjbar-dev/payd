@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -186,6 +187,37 @@ func TestPerKeyRateLimits(t *testing.T) {
 	}
 }
 
+func TestBalanceDriftMapsToConflictAndCanBeCleared(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	ctx := context.Background()
+	addressID := int64(1)
+	address := "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+	if err := database.CommitBlock(ctx, store.BlockRecord{Height: 1, ID: "B1", ParentID: "B0", Timestamp: 1}, 64,
+		func(write *store.BlockWrite) error {
+			_, err := write.UpsertPayment(store.PaymentRecord{TxID: "drift", Direction: "in", BlockHeight: 1,
+				BlockID: "B1", BlockTimestamp: 1, FromAddress: "payer", ToAddress: address,
+				AddressID: &addressID, Asset: "USDT", AmountRaw: "1000000", Status: "confirmed", DetectedAt: 1})
+			return err
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReconcileChainBalances(ctx, []store.ChainBalance{{AddressID: addressID, Address: address, Asset: "USDT", Raw: "2"}},
+		store.NewEventConfig(testConfig(1).IPN, testConfig(1).Assets), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, status, code, err := server.ValidateWithdrawalSource(ctx, address, "USDT"); !errors.Is(err, store.ErrBalanceDrift) || status != http.StatusConflict || code != "balance_drift" {
+		t.Fatalf("drift validation = status %d code %q err %v", status, code, err)
+	}
+	cleared := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/"+address+"/clear-drift", "")
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear drift = %d %s", cleared.Code, cleared.Body.String())
+	}
+	if balance, _, _, err := server.ValidateWithdrawalSource(ctx, address, "USDT"); err != nil || balance.ConfirmedRaw != "1000000" {
+		t.Fatalf("post-clear validation = %+v, %v", balance, err)
+	}
+}
+
 func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
 	t.Helper()
 	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
@@ -219,7 +251,7 @@ func testConfig(poolSize int) config.Config {
 		IPN:    config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{{Name: "shop", Enabled: true}}},
 		Price:  config.Price{Pairs: []string{"TRXUSDT"}, StaleAfter: 5 * time.Minute},
 		Auth: config.Auth{TOTPSecret: testTOTP, APIKeys: []config.APIKey{{
-			Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write"},
+			Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write"},
 		}}},
 	}
 }

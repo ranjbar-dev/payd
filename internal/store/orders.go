@@ -471,6 +471,13 @@ func (s *Store) AttributePayment(ctx context.Context, paymentID int64, orderID s
 	} else if err != nil {
 		return fmt.Errorf("load attribution order: %w", err)
 	}
+	var addressID sql.NullInt64
+	var asset string
+	if err := tx.QueryRow("SELECT address_id, asset FROM payments WHERE id = ? AND status = 'unattributed'", paymentID).Scan(&addressID, &asset); errors.Is(err, sql.ErrNoRows) {
+		return ErrPaymentNotFound
+	} else if err != nil {
+		return err
+	}
 	result, err := tx.Exec(`UPDATE payments SET order_id = ?, status = CASE WHEN confirmed_at IS NULL THEN 'seen' ELSE 'confirmed' END
         WHERE id = ? AND status = 'unattributed'`, orderID, paymentID)
 	if err != nil {
@@ -485,6 +492,11 @@ func (s *Store) AttributePayment(ctx context.Context, paymentID int64, orderID s
 	}
 	if _, err := recalculateOrder(tx, orderID); err != nil {
 		return err
+	}
+	if addressID.Valid {
+		if err := recalculateBalance(tx, addressID.Int64, asset); err != nil { // BAL-001
+			return err
+		}
 	}
 	if _, err := tx.Exec("UPDATE orders SET updated_at = ? WHERE id = ?", now.UTC().Unix(), orderID); err != nil {
 		return err

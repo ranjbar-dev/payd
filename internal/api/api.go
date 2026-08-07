@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha1" // RFC 6238 uses HMAC-SHA-1 by default.
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
@@ -43,10 +44,11 @@ type Server struct {
 	keys       []apiKey
 	totpSecret []byte
 
-	mu       sync.RWMutex
-	assets   map[string]int
-	price    config.Price
-	cooldown time.Duration
+	mu        sync.RWMutex
+	assets    map[string]config.Asset
+	price     config.Price
+	resources config.Resources
+	cooldown  time.Duration
 
 	rateMu sync.Mutex
 	rates  map[string]rateWindow
@@ -114,6 +116,8 @@ func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger
 	mux.Handle("GET /api/v1/payments/unattributed", server.requireScope("orders:read", server.listUnattributed))
 	mux.Handle("GET /api/v1/payments/orphaned", server.requireScope("orders:read", server.listOrphaned))
 	mux.Handle("POST /api/v1/payments/{id}/attribute", server.requireScope("orders:write", server.attributePayment))
+	mux.Handle("GET /api/v1/wallets/needs-resources", server.requireScope("wallets:read", server.walletsNeedingResources))
+	mux.Handle("POST /api/v1/wallets/{address}/clear-drift", server.requireScope("wallets:write", server.clearBalanceDrift))
 	server.handler = server.logRequests(server.normalizeErrors(server.authenticate(server.rateLimit(mux))))
 	return server, nil
 }
@@ -124,12 +128,13 @@ func (s *Server) UpdateConfig(cfg config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.assets == nil {
-		s.assets = make(map[string]int)
+		s.assets = make(map[string]config.Asset)
 	}
+	clear(s.assets)
 	for _, asset := range cfg.Assets {
-		s.assets[asset.Symbol] = asset.Decimals
+		s.assets[asset.Symbol] = asset
 	}
-	s.price, s.cooldown = cfg.Price, cfg.Wallet.Cooldown
+	s.price, s.resources, s.cooldown = cfg.Price, cfg.Resources, cfg.Wallet.Cooldown
 }
 
 // ValidateTOTP verifies the RFC 6238 +/-1-step window then atomically consumes the matching code (API-022).
@@ -406,6 +411,124 @@ func (s *Server) attributePayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"attributed": true})
 }
 
+func (s *Server) walletsNeedingResources(w http.ResponseWriter, r *http.Request) {
+	addresses, err := s.store.WalletAddresses(r.Context(), true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	items := make([]map[string]any, 0, len(addresses))
+	for _, address := range addresses {
+		item, err := s.walletJSON(r.Context(), address)
+		if err != nil {
+			s.logger.Error("format wallet resources", "address", address.Address, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"addresses": items, "total": len(items)})
+}
+
+func (s *Server) clearBalanceDrift(w http.ResponseWriter, r *http.Request) {
+	state := requestStateFrom(r.Context())
+	if err := s.store.ClearBalanceDrift(r.Context(), r.PathValue("address"), state.keyName, r.RemoteAddr, time.Now()); err != nil {
+		if errors.Is(err, store.ErrAddressNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "wallet address was not found", nil)
+		} else {
+			s.logger.Error("clear balance drift", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"drift_detected": false})
+}
+
+func (s *Server) walletJSON(ctx context.Context, address store.WalletAddress) (map[string]any, error) {
+	s.mu.RLock()
+	assets := make(map[string]config.Asset, len(s.assets))
+	for symbol, asset := range s.assets {
+		assets[symbol] = asset
+	}
+	priceConfig, resources := s.price, s.resources
+	s.mu.RUnlock()
+	energyAvailable := max(address.EnergyLimit-address.EnergyUsed, 0)
+	bandwidthAvailable := max(address.BandwidthLimit-address.BandwidthUsed, 0)
+	energySufficient := energyAvailable >= resources.MinEnergy
+	bandwidthSufficient := bandwidthAvailable >= resources.MinBandwidth
+	balances := make([]map[string]any, 0, len(address.Balances))
+	trxRaw := new(big.Int)
+	drift := false
+	for _, balance := range address.Balances {
+		asset, ok := assets[balance.Asset]
+		if !ok {
+			return nil, fmt.Errorf("unknown wallet asset %s", balance.Asset)
+		}
+		confirmed, err := store.FormatUnits(balance.ConfirmedRaw, asset.Decimals)
+		if err != nil {
+			return nil, err
+		}
+		pending, err := store.FormatUnits(balance.PendingRaw, asset.Decimals)
+		if err != nil {
+			return nil, err
+		}
+		item := map[string]any{"asset": balance.Asset, "confirmed": confirmed, "pending": pending, "drift_detected": balance.Drift}
+		if quote, err := price.Current(ctx, s.store, priceConfig, balance.Asset, time.Now()); err == nil {
+			if usd, ok := amountUSD(balance.ConfirmedRaw, asset.Decimals, quote.USD); ok {
+				item["usd"] = usd
+			}
+		}
+		balances = append(balances, item)
+		if balance.Asset == "TRX" {
+			trxRaw.SetString(balance.ConfirmedRaw, 10)
+		}
+		drift = drift || balance.Drift
+	}
+	params, paramsErr := s.store.LoadChainParameters(ctx)
+	if paramsErr != nil && !errors.Is(paramsErr, sql.ErrNoRows) {
+		return nil, paramsErr
+	}
+	bandwidthBurnSufficient := false
+	if paramsErr == nil {
+		cost := new(big.Int).Mul(big.NewInt(resources.MinBandwidth), big.NewInt(params.TransactionFee))
+		bandwidthBurnSufficient = trxRaw.Cmp(cost) >= 0
+	}
+	trxForBandwidth, err := store.FormatUnits(trxRaw.String(), 6)
+	if err != nil {
+		return nil, err
+	}
+	canWithdraw := make(map[string]bool, len(assets))
+	for symbol, asset := range assets {
+		canWithdraw[symbol] = !drift && (bandwidthSufficient || bandwidthBurnSufficient) && (asset.Kind == "native" || energySufficient)
+	}
+	blocked := make([]string, 0, 2)
+	if !bandwidthSufficient && !bandwidthBurnSufficient {
+		blocked = append(blocked, "bandwidth")
+	}
+	if !energySufficient {
+		blocked = append(blocked, "energy")
+	}
+	item := map[string]any{
+		"address": address.Address, "hd_index": address.HDIndex, "balances": balances,
+		"energy":                 map[string]any{"available": energyAvailable, "limit": address.EnergyLimit, "required": resources.MinEnergy, "sufficient": energySufficient},
+		"bandwidth":              map[string]any{"available": bandwidthAvailable, "limit": address.BandwidthLimit, "required": resources.MinBandwidth, "sufficient": bandwidthSufficient},
+		"trx_for_bandwidth_burn": trxForBandwidth, "can_withdraw": canWithdraw,
+		"blocked_by": blocked, "drift_detected": drift,
+	}
+	if address.ResourcesCheckedAt != nil {
+		item["checked_at"] = *address.ResourcesCheckedAt
+	}
+	if paramsErr == nil {
+		burnSun := new(big.Int).Mul(big.NewInt(resources.MinEnergy), big.NewInt(params.EnergyFee))
+		burn, err := store.FormatUnits(burnSun.String(), 6)
+		if err != nil {
+			return nil, err
+		}
+		item["estimated_burn_trx"], item["energy_fee_sun"] = burn, params.EnergyFee
+	}
+	return item, nil
+}
+
 func (s *Server) orderJSON(order store.Order) (map[string]any, error) {
 	decimals, ok := s.assetDecimals(order.Asset)
 	if !ok {
@@ -471,8 +594,17 @@ func (s *Server) paymentJSON(payments []store.Payment) []map[string]any {
 func (s *Server) assetDecimals(symbol string) (int, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	decimals, ok := s.assets[symbol]
-	return decimals, ok
+	asset, ok := s.assets[symbol]
+	return asset.Decimals, ok
+}
+
+// ValidateWithdrawalSource maps BAL-002 into the HTTP conflict used by P11's handler.
+func (s *Server) ValidateWithdrawalSource(ctx context.Context, address, asset string) (store.Balance, int, string, error) {
+	balance, err := s.store.BalanceForWithdrawal(ctx, address, asset)
+	if errors.Is(err, store.ErrBalanceDrift) {
+		return store.Balance{}, http.StatusConflict, "balance_drift", err
+	}
+	return balance, 0, "", err
 }
 
 func (s *Server) rawFromUSD(ctx context.Context, asset, value string, decimals int, now time.Time) (*big.Int, price.Quote, error) {

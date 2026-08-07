@@ -42,6 +42,7 @@ func TestConfigSafetyValidation(t *testing.T) {
 			c.Tron.Endpoints[1].URL = "https://API.TRONGRID.IO/other"
 		},
 		"PRC-001 wrong interval": func(c *Config) { c.Price.Interval = 30 * time.Second },
+		"RES-001a fast tier cap": func(c *Config) { c.Resources.MaxPolledAddresses = 51 },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

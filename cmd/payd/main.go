@@ -128,12 +128,20 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	resourceMonitor, err := walletpool.NewMonitor(chainClient.Read, db, cfg, logger)
+	if err != nil {
+		return err
+	}
+	balanceReconciler, err := walletpool.NewReconciler(chainClient.Read, db, cfg, logger)
+	if err != nil {
+		return err
+	}
 	ipnWorker, err := ipn.New(db, cfg.IPN, logger)
 	if err != nil {
 		return err
 	}
 	var workers sync.WaitGroup
-	workers.Add(6)
+	workers.Add(8)
 	go func() {
 		defer workers.Done()
 		priceWorker.Run(ctx)
@@ -153,6 +161,14 @@ func run(args []string) error {
 	go func() {
 		defer workers.Done()
 		confirmationWorker.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		resourceMonitor.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		balanceReconciler.Run(ctx)
 	}()
 	go func() {
 		defer workers.Done()
@@ -199,6 +215,8 @@ func run(args []string) error {
 			followerWorker.UpdateEvents(events)
 			lifecycleWorker.UpdateEvents(events)
 			confirmationWorker.UpdateEvents(events)
+			resourceMonitor.UpdateConfig(next)
+			balanceReconciler.UpdateConfig(next)
 			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
 			apiServer.UpdateConfig(next)

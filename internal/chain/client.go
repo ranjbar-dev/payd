@@ -4,6 +4,7 @@ package chain
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/btcsuite/btcd/btcutil/base58"
 
 	"payd/internal/config"
 )
@@ -172,6 +175,24 @@ func (c *ReadClient) GetTransactionByID(ctx context.Context, txid string) (json.
 
 func (c *ReadClient) GetAccountResource(ctx context.Context, address string) (json.RawMessage, error) {
 	return c.post(ctx, "/wallet/getaccountresource", map[string]any{"address": address, "visible": true})
+}
+
+func (c *ReadClient) GetAccount(ctx context.Context, address string) (json.RawMessage, error) {
+	return c.post(ctx, "/wallet/getaccount", map[string]any{"address": address, "visible": true})
+}
+
+// GetTRC20Balance performs the read-only balanceOf call used by RL-003.
+func (c *ReadClient) GetTRC20Balance(ctx context.Context, address, contract string) (json.RawMessage, error) {
+	payload, version, err := base58.CheckDecode(address)
+	if err != nil || version != 0x41 || len(payload) != 20 {
+		return nil, fmt.Errorf("invalid TRON address %q", address)
+	}
+	parameter := make([]byte, 32)
+	copy(parameter[12:], payload)
+	return c.post(ctx, "/wallet/triggerconstantcontract", map[string]any{
+		"owner_address": address, "contract_address": contract, "visible": true,
+		"function_selector": "balanceOf(address)", "parameter": hex.EncodeToString(parameter),
+	})
 }
 
 func (c *ReadClient) GetChainParameters(ctx context.Context) (json.RawMessage, error) {
