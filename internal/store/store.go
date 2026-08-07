@@ -42,6 +42,13 @@ type Balance struct {
 	Drift        bool
 }
 
+type Price struct {
+	Symbol    string
+	PriceUSD  string
+	Source    string
+	FetchedAt int64
+}
+
 // Open creates the database privately and opens the NORMAL and FULL connections (ARC-006/006a, DB-006).
 func Open(ctx context.Context, path string) (*Store, error) {
 	absPath, err := filepath.Abs(path)
@@ -222,6 +229,27 @@ func (s *Store) AssetPrice(ctx context.Context, symbol string) (string, int64, e
 		return "", 0, fmt.Errorf("load %s price: %w", symbol, err)
 	}
 	return price, fetchedAt, nil
+}
+
+// UpsertPrices atomically records one successful provider response (PRC-001/004).
+func (s *Store) UpsertPrices(ctx context.Context, prices []Price) error {
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin price update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	const query = `INSERT INTO prices(symbol, price_usd, source, fetched_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET price_usd = excluded.price_usd,
+        source = excluded.source, fetched_at = excluded.fetched_at`
+	for _, price := range prices {
+		if _, err := tx.ExecContext(ctx, query, price.Symbol, price.PriceUSD, price.Source, price.FetchedAt); err != nil {
+			return fmt.Errorf("upsert %s price: %w", price.Symbol, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit price update: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) Balance(ctx context.Context, addressID int64, asset string) (Balance, error) {

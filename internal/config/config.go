@@ -339,8 +339,11 @@ func (c Config) Validate() error {
 	add(c.Price.Provider != "", "price.provider is required")
 	_, err = httpURL(c.Price.URL)
 	add(err == nil, "price.url: %v", err)
-	positiveDuration("price.interval", c.Price.Interval)
+	add(c.Price.Interval == 60*time.Second, "price.interval must be 60s (PRC-001)")
 	add(len(c.Price.Pairs) > 0, "price.pairs must not be empty")
+	for _, pair := range c.Price.Pairs {
+		add(strings.HasSuffix(pair, "USDT") && len(pair) > len("USDT"), "price pair %q must be a *USDT pair", pair)
+	}
 	positiveDuration("price.stale_after", c.Price.StaleAfter)
 
 	add(c.Resources.MinEnergy >= 0, "resources.min_energy must be non-negative")

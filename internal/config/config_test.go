@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func loadExample(t *testing.T) Config {
@@ -40,6 +41,7 @@ func TestConfigSafetyValidation(t *testing.T) {
 		"CFG-015 duplicate host": func(c *Config) {
 			c.Tron.Endpoints[1].URL = "https://API.TRONGRID.IO/other"
 		},
+		"PRC-001 wrong interval": func(c *Config) { c.Price.Interval = 30 * time.Second },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

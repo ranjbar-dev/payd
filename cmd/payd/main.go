@@ -25,6 +25,7 @@ import (
 	"payd/internal/ipn"
 	"payd/internal/lifecycle"
 	"payd/internal/matcher"
+	"payd/internal/price"
 	"payd/internal/seed"
 	"payd/internal/store"
 	walletpool "payd/internal/wallet"
@@ -90,6 +91,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	priceWorker, err := price.New(cfg.Price, db, logger)
+	if err != nil {
+		return err
+	}
 	parameterWorker, err := chain.NewParameterWorker(chainClient.Read, db, logger, cfg.Energy.MaxBurnTRX)
 	if err != nil {
 		return err
@@ -119,7 +124,11 @@ func run(args []string) error {
 		return err
 	}
 	var workers sync.WaitGroup
-	workers.Add(5)
+	workers.Add(6)
+	go func() {
+		defer workers.Done()
+		priceWorker.Run(ctx)
+	}()
 	go func() {
 		defer workers.Done()
 		parameterWorker.Run(ctx)

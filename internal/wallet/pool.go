@@ -13,13 +13,14 @@ import (
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
 
 	"payd/internal/config"
+	"payd/internal/price"
 	"payd/internal/store"
 )
 
 var (
 	ErrInvalidOrder    = errors.New("invalid order")
 	ErrUnknownConsumer = errors.New("unknown or disabled consumer")
-	ErrStalePrice      = errors.New("asset price is unavailable or stale")
+	ErrStalePrice      = price.ErrUnavailable
 )
 
 type CreateOrderRequest struct {
@@ -125,12 +126,9 @@ func (p *Pool) configuredAsset(symbol string) bool {
 }
 
 func (p *Pool) price(ctx context.Context, asset string, now time.Time) (string, int64, error) {
-	if asset == "USDT" || asset == "USDC" {
-		return "1.00", now.UTC().Unix(), nil
+	quote, err := price.Current(ctx, p.store, p.config.Price, asset, now)
+	if err != nil {
+		return "", 0, err // ORD-009 / PRC-005
 	}
-	price, fetchedAt, err := p.store.AssetPrice(ctx, asset)
-	if err != nil || now.UTC().Sub(time.Unix(fetchedAt, 0)) > p.config.Price.StaleAfter {
-		return "", 0, ErrStalePrice // ORD-009 / PRC-005
-	}
-	return price, fetchedAt, nil
+	return quote.USD, quote.FetchedAt, nil
 }

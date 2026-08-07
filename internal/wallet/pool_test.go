@@ -37,6 +37,13 @@ func TestConcurrentOrderCreationNeverDoubleAssignsAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Unix(1_750_000_000, 0)
+	if err := database.UpsertPrices(ctx, []store.Price{{Symbol: "TRX", PriceUSD: "0.25", Source: "test", FetchedAt: now.Add(-6 * time.Minute).Unix()}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pool.CreateOrder(ctx, CreateOrderRequest{Asset: "TRX", ExpectedRaw: "1"}, now); !errors.Is(err, ErrStalePrice) {
+		t.Fatalf("stale-price order error = %v", err) // ORD-009 / PRC-005
+	}
 
 	start := make(chan struct{})
 	results := make(chan store.Order, 2)
@@ -50,7 +57,7 @@ func TestConcurrentOrderCreationNeverDoubleAssignsAddress(t *testing.T) {
 			ref := "concurrent-" + string(rune('a'+index))
 			order, created, err := pool.CreateOrder(ctx, CreateOrderRequest{
 				ExternalRef: &ref, Asset: "USDT", ExpectedRaw: "25000000",
-			}, time.Unix(1_750_000_000, 0))
+			}, now)
 			if err != nil {
 				errorsOut <- err
 				return
