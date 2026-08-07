@@ -24,6 +24,7 @@ tron:
   confirmations_required: 19
   reorg_depth: 64
   request_timeout: 10s
+  daily_request_quota: 100000         # CHN-023: 70% soft cap is derived from this
 assets:
   - symbol: "TRX"
     kind: "native"

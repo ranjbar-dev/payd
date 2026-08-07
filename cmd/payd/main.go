@@ -16,6 +16,7 @@ import (
 	"github.com/awnumar/memguard"
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
 
+	"payd/internal/chain"
 	"payd/internal/config"
 	"payd/internal/seed"
 	"payd/internal/store"
@@ -73,6 +74,20 @@ func run(args []string) error {
 	if err := db.InitializeWallet(ctx, wallet, cfg.Wallet.Account, cfg.Wallet.PoolInitialSize, cfg.Resources.ResourceWalletIndex); err != nil {
 		return err
 	}
+	chainClient, err := chain.New(cfg.Tron, logger)
+	if err != nil {
+		return err
+	}
+	parameterWorker, err := chain.NewParameterWorker(chainClient.Read, db, logger, cfg.Energy.MaxBurnTRX)
+	if err != nil {
+		return err
+	}
+	parameterDone := make(chan struct{})
+	go func() {
+		defer close(parameterDone)
+		parameterWorker.Run(ctx)
+	}()
+	defer func() { <-parameterDone }()
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

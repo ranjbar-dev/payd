@@ -62,6 +62,7 @@ type Tron struct {
 	ConfirmationsRequired int           `yaml:"confirmations_required"`
 	ReorgDepth            int           `yaml:"reorg_depth"`
 	RequestTimeout        time.Duration `yaml:"request_timeout"`
+	DailyRequestQuota     int64         `yaml:"daily_request_quota"`
 }
 
 type Endpoint struct {
@@ -264,7 +265,8 @@ func (c Config) Validate() error {
 	positiveDuration("tron.poll_interval", c.Tron.PollInterval)
 	add(c.Tron.ConfirmationsRequired > 0, "tron.confirmations_required must be positive")
 	add(c.Tron.ReorgDepth > 0, "tron.reorg_depth must be positive")
-	positiveDuration("tron.request_timeout", c.Tron.RequestTimeout)
+	add(c.Tron.RequestTimeout == 10*time.Second, "tron.request_timeout must be 10s (CHN-024)")
+	add(c.Tron.DailyRequestQuota > 0, "tron.daily_request_quota must be positive")
 
 	add(len(c.Assets) > 0, "assets must not be empty")
 	symbols := make(map[string]struct{}, len(c.Assets))

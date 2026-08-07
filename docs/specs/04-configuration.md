@@ -42,6 +42,7 @@ tron:
   confirmations_required: 19                # additional depth requirement; see CNF-002
   reorg_depth: 64                           # block hashes retained for reorg detection
   request_timeout: 10s
+  daily_request_quota: 100000               # CHN-023 derives its 70% soft cap from RL-001
 
 assets:
   - symbol: "TRX"

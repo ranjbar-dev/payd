@@ -28,6 +28,12 @@ type Store struct {
 	full   *sql.DB // ARC-006a: reserved for irreversible-side-effect writes only.
 }
 
+type ChainParameters struct {
+	EnergyFee      int64
+	TransactionFee int64
+	FetchedAt      int64
+}
+
 // Open creates the database privately and opens the NORMAL and FULL connections (ARC-006/006a, DB-006).
 func Open(ctx context.Context, path string) (*Store, error) {
 	absPath, err := filepath.Abs(path)
@@ -151,6 +157,54 @@ func migrationVersion(name string) (int, error) {
 
 func (s *Store) Close() error {
 	return errors.Join(s.full.Close(), s.normal.Close())
+}
+
+// UpsertChainParameters replaces both live fee parameters atomically (RES-020/021).
+func (s *Store) UpsertChainParameters(ctx context.Context, energyFee, transactionFee int64, fetchedAt time.Time) (*int64, error) {
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin chain parameter update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var old int64
+	var previous *int64
+	err = tx.QueryRowContext(ctx, "SELECT value FROM chain_params WHERE name = 'getEnergyFee'").Scan(&old)
+	if err == nil {
+		previous = &old
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read previous energy fee: %w", err)
+	}
+	const upsert = `INSERT INTO chain_params(name, value, fetched_at) VALUES (?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET value = excluded.value, fetched_at = excluded.fetched_at`
+	stamp := fetchedAt.UTC().Unix()
+	if _, err := tx.ExecContext(ctx, upsert, "getEnergyFee", energyFee, stamp); err != nil {
+		return nil, fmt.Errorf("upsert energy fee: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, upsert, "getTransactionFee", transactionFee, stamp); err != nil {
+		return nil, fmt.Errorf("upsert transaction fee: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit chain parameter update: %w", err)
+	}
+	return previous, nil
+}
+
+// LoadChainParameters returns no row until both required live values exist (RES-022).
+func (s *Store) LoadChainParameters(ctx context.Context) (ChainParameters, error) {
+	var energy, transaction, fetched sql.NullInt64
+	err := s.normal.QueryRowContext(ctx, `SELECT
+        MAX(CASE WHEN name = 'getEnergyFee' THEN value END),
+        MAX(CASE WHEN name = 'getTransactionFee' THEN value END),
+        MIN(CASE WHEN name IN ('getEnergyFee','getTransactionFee') THEN fetched_at END)
+        FROM chain_params`).Scan(&energy, &transaction, &fetched)
+	if err != nil {
+		return ChainParameters{}, fmt.Errorf("load chain parameters: %w", err)
+	}
+	if !energy.Valid || !transaction.Valid || !fetched.Valid {
+		return ChainParameters{}, sql.ErrNoRows
+	}
+	return ChainParameters{EnergyFee: energy.Int64, TransactionFee: transaction.Int64, FetchedAt: fetched.Int64}, nil
 }
 
 // InitializeWallet derives the configured account's initial pool and disabled resource wallet (CFG-013).
