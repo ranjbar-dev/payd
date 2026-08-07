@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/awnumar/memguard"
@@ -18,6 +19,7 @@ import (
 
 	"payd/internal/chain"
 	"payd/internal/config"
+	"payd/internal/follower"
 	"payd/internal/seed"
 	"payd/internal/store"
 )
@@ -82,12 +84,21 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	parameterDone := make(chan struct{})
+	followerWorker, err := follower.New(chainClient.Read, db, nil, cfg.Tron.PollInterval, cfg.Tron.ReorgDepth, logger)
+	if err != nil {
+		return err
+	}
+	var workers sync.WaitGroup
+	workers.Add(2)
 	go func() {
-		defer close(parameterDone)
+		defer workers.Done()
 		parameterWorker.Run(ctx)
 	}()
-	defer func() { <-parameterDone }()
+	go func() {
+		defer workers.Done()
+		followerWorker.Run(ctx)
+	}()
+	defer workers.Wait()
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

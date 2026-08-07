@@ -1,0 +1,73 @@
+{
+  "recorded_at": "2026-08-07",
+  "source": "TronGrid getblockbynum + gettransactioninfobyblocknum; selected transactions and receipts retained verbatim",
+  "cases": [
+    {
+      "name": "empty_block",
+      "tags": ["empty_block"],
+      "network": "nile",
+      "height": 1,
+      "block": {
+        "blockID": "0000000000000001f1b9db4e1f7a39e5bcb4636382f3b24ee38a718e2bd4ddb0",
+        "block_header": {"raw_data": {"timestamp": 1572510117000, "txTrieRoot": "0000000000000000000000000000000000000000000000000000000000000000", "parentHash": "0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc", "number": 1, "witness_address": "41f24cbabb5cf3e639e1869a5cc6be49614f8e6a14", "version": 9}},
+        "transactions": []
+      },
+      "receipts": []
+    },
+    {
+      "name": "native_outbound_and_revert",
+      "tags": ["trx_transfer", "outbound_transfer", "failed_contract_call", "reverted_transfer"],
+      "network": "nile",
+      "height": 69858661,
+      "owned_address_hex": "418e4fadfd864e2cd16cc6c2dff4c935b716391f1f",
+      "block": {
+        "blockID": "000000000429f56583368f7da4fed138002af56bb98bcd11551320bf7ec84242",
+        "block_header": {"raw_data": {"timestamp": 1786087611000, "txTrieRoot": "e3609fbdb9171bb9f24eb42f63ff3d546899781ac82476548f43b92f4d328098", "parentHash": "000000000429f5649893425ae544dd3ce8c5d24ebd5470c975653cb735b27bfd", "number": 69858661, "witness_address": "411d298407f3b8792ee14d91d6924185846d88dd97", "version": 37}},
+        "transactions": [
+          {"txID": "7c8febdb693dedce87ff8cd12fc4f7f6318efba8d7ba4028eefad1bd1d554b61", "raw_data": {"contract": [{"parameter": {"value": {"owner_address": "418e4fadfd864e2cd16cc6c2dff4c935b716391f1f", "to_address": "413abe71ca8ef983ceb105e99e51a04edcb309fcbf", "amount": 1}, "type_url": "type.googleapis.com/protocol.TransferContract"}, "type": "TransferContract"}], "timestamp": 1786087607144}, "ret": [{"contractRet": "SUCCESS"}]},
+          {"txID": "c93de6e0a95a196d66202e6c36e9cfc4e23cb92bc3346bb789c4d4e3aa286331", "raw_data": {"contract": [{"parameter": {"value": {"owner_address": "41d4532dc709c5411a8ef6d1300ed6e7a7c7e088a3", "contract_address": "41d03bdd7c4eea8210fdfb7010e31a4bda89ca36b2", "data": "25b00885"}, "type_url": "type.googleapis.com/protocol.TriggerSmartContract"}, "type": "TriggerSmartContract"}], "timestamp": 1786087603334, "fee_limit": 100000000}, "ret": [{"contractRet": "REVERT"}]}
+        ]
+      },
+      "receipts": [
+        {"id": "7c8febdb693dedce87ff8cd12fc4f7f6318efba8d7ba4028eefad1bd1d554b61", "blockNumber": 69858661, "blockTimeStamp": 1786087611000, "receipt": {"net_fee": 265000}},
+        {"id": "c93de6e0a95a196d66202e6c36e9cfc4e23cb92bc3346bb789c4d4e3aa286331", "blockNumber": 69858661, "blockTimeStamp": 1786087611000, "receipt": {"energy_fee": 48700, "energy_usage_total": 487, "net_fee": 279000, "result": "REVERT"}, "result": "FAILED", "resMessage": "524556455254206f70636f6465206578656375746564"}
+      ]
+    },
+    {
+      "name": "trc20_transfer",
+      "tags": ["trc20_transfer"],
+      "network": "nile",
+      "height": 69858652,
+      "block": {
+        "blockID": "000000000429f55cfa6a57ff8087393fe9f4b3cfe064b123933af6dddfaf688d",
+        "block_header": {"raw_data": {"timestamp": 1786087584000, "txTrieRoot": "7d552c9666cf0e259ca10fc3e0a20a8118a830b2835b854566cb04a1f7dd8b61", "parentHash": "000000000429f55bd3626fe61d1198ddcd7a31346dba4409c5d679c08ef7f992", "number": 69858652, "witness_address": "41608e7e1c6f6dcc1679ea512503e41ca0254e0948", "version": 37}},
+        "transactions": [
+          {"txID": "09e73ffa390fc6f82d549ca853916f6a0096f148823c30a031852fdf6d764109", "raw_data": {"contract": [{"parameter": {"value": {"owner_address": "41d4532dc709c5411a8ef6d1300ed6e7a7c7e088a3", "contract_address": "41eca9bc828a3005b9a3b909f2cc5c2a54794de05f", "data": "a9059cbb000000000000000000000000d03bdd7c4eea8210fdfb7010e31a4bda89ca36b2000000000000000000000000000000000000000000000000000000000bebc200"}, "type_url": "type.googleapis.com/protocol.TriggerSmartContract"}, "type": "TriggerSmartContract"}], "timestamp": 1786087574601, "fee_limit": 100000000}, "ret": [{"contractRet": "SUCCESS"}]}
+        ]
+      },
+      "receipts": [
+        {"id": "09e73ffa390fc6f82d549ca853916f6a0096f148823c30a031852fdf6d764109", "blockNumber": 69858652, "blockTimeStamp": 1786087584000, "receipt": {"origin_energy_usage": 29650, "energy_usage_total": 29650, "net_fee": 345000, "result": "SUCCESS"}, "log": [{"address": "eca9bc828a3005b9a3b909f2cc5c2a54794de05f", "topics": ["ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "000000000000000000000000d4532dc709c5411a8ef6d1300ed6e7a7c7e088a3", "000000000000000000000000d03bdd7c4eea8210fdfb7010e31a4bda89ca36b2"], "data": "000000000000000000000000000000000000000000000000000000000bebc200"}]}
+      ]
+    },
+    {
+      "name": "multiple_transfer_logs",
+      "tags": ["multiple_transfer_logs"],
+      "network": "mainnet",
+      "height": 85139050,
+      "block": {
+        "blockID": "0000000005131e6a4b902ec9df9c3e53078eadd3fe410038096058c484f82d57",
+        "block_header": {"raw_data": {"timestamp": 1786088070000, "txTrieRoot": "ac8094680501d48c7f42fe15146d31a43249169bdcdde8ab8f1d248abcf59ace", "parentHash": "0000000005131e69cf34d61a3864d7c2c0316ffe3e7180151627404a16372e31", "number": 85139050, "witness_address": "4162398d516b555ac64af24416e05c199c01823048", "version": 36}},
+        "transactions": [
+          {"txID": "ab63273467851483e485fd49308a58a26a3416de3ac3c3935da9fb640e35f202", "raw_data": {"contract": [{"parameter": {"value": {"owner_address": "413b415050b1e79e38507cb6e48dacc227affdd50c", "contract_address": "4139dd12a54e2bab7c82aa14a1e158b34263d2d510", "data": "6f21b898"}, "type_url": "type.googleapis.com/protocol.TriggerSmartContract"}, "type": "TriggerSmartContract", "Permission_id": 2}], "timestamp": 1786088068297, "fee_limit": 30587520}, "ret": [{"contractRet": "SUCCESS"}]}
+        ]
+      },
+      "receipts": [
+        {"id": "ab63273467851483e485fd49308a58a26a3416de3ac3c3935da9fb640e35f202", "blockNumber": 85139050, "blockTimeStamp": 1786088070000, "receipt": {"energy_usage": 154896, "energy_usage_total": 154896, "net_usage": 701, "result": "SUCCESS"}, "log": [
+          {"address": "a614f803b6fd780986a42c78ec9c7f77e6ded13c", "topics": ["ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "00000000000000000000000041e08ccb7ce504ec1e3800117b9f4eb8bcd0501b", "00000000000000000000000076b5c8429b78a38643e5ff9a94b4ca10c1efd867"], "data": "000000000000000000000000000000000000000000000000000000000016e360"},
+          {"address": "a614f803b6fd780986a42c78ec9c7f77e6ded13c", "topics": ["ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "00000000000000000000000041e08ccb7ce504ec1e3800117b9f4eb8bcd0501b", "000000000000000000000000548f85a04a128ab0e5b8c07552dc6528b276e8c6"], "data": "0000000000000000000000000000000000000000000000000000003354521e80"},
+          {"address": "39dd12a54e2bab7c82aa14a1e158b34263d2d510", "topics": ["fe6f7f8574ad66f5a9001635fa07c426dbed515866253867ebd1ca6ac43f0d12"], "data": ""}
+        ]}
+      ]
+    }
+  ]
+}

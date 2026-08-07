@@ -262,7 +262,7 @@ func (c Config) Validate() error {
 	}
 	_, err = httpURL(c.Tron.SolidityURL)
 	add(err == nil, "tron.solidity_url: %v", err)
-	positiveDuration("tron.poll_interval", c.Tron.PollInterval)
+	add(c.Tron.PollInterval == 3*time.Second, "tron.poll_interval must be 3s (CHN-001)")
 	add(c.Tron.ConfirmationsRequired > 0, "tron.confirmations_required must be positive")
 	add(c.Tron.ReorgDepth > 0, "tron.reorg_depth must be positive")
 	add(c.Tron.RequestTimeout == 10*time.Second, "tron.request_timeout must be 10s (CHN-024)")
