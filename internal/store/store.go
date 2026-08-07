@@ -34,6 +34,13 @@ type ChainParameters struct {
 	FetchedAt      int64
 }
 
+type Balance struct {
+	ConfirmedRaw string
+	PendingRaw   string
+	ChainRaw     *string
+	Drift        bool
+}
+
 // Open creates the database privately and opens the NORMAL and FULL connections (ARC-006/006a, DB-006).
 func Open(ctx context.Context, path string) (*Store, error) {
 	absPath, err := filepath.Abs(path)
@@ -205,6 +212,29 @@ func (s *Store) LoadChainParameters(ctx context.Context) (ChainParameters, error
 		return ChainParameters{}, sql.ErrNoRows
 	}
 	return ChainParameters{EnergyFee: energy.Int64, TransactionFee: transaction.Int64, FetchedAt: fetched.Int64}, nil
+}
+
+func (s *Store) AssetPrice(ctx context.Context, symbol string) (string, int64, error) {
+	var price string
+	var fetchedAt int64
+	if err := s.normal.QueryRowContext(ctx, "SELECT price_usd, fetched_at FROM prices WHERE symbol = ?", symbol).Scan(&price, &fetchedAt); err != nil {
+		return "", 0, fmt.Errorf("load %s price: %w", symbol, err)
+	}
+	return price, fetchedAt, nil
+}
+
+func (s *Store) Balance(ctx context.Context, addressID int64, asset string) (Balance, error) {
+	var balance Balance
+	var chain sql.NullString
+	if err := s.normal.QueryRowContext(ctx, `SELECT confirmed_raw, pending_raw, chain_raw, drift_detected
+        FROM balances WHERE address_id = ? AND asset = ?`, addressID, asset).
+		Scan(&balance.ConfirmedRaw, &balance.PendingRaw, &chain, &balance.Drift); err != nil {
+		return Balance{}, fmt.Errorf("load balance: %w", err)
+	}
+	if chain.Valid {
+		balance.ChainRaw = &chain.String
+	}
+	return balance, nil
 }
 
 // InitializeWallet derives the configured account's initial pool and disabled resource wallet (CFG-013).

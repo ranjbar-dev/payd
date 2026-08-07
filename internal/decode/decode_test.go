@@ -10,12 +10,24 @@ import (
 	"testing"
 	"time"
 
+	"payd/internal/config"
 	"payd/internal/follower"
 	"payd/internal/store"
 )
 
 type recordedFixtures struct {
 	Cases []recordedCase `json:"cases"`
+}
+
+func TestConfiguredDustThresholdUsesBaseUnits(t *testing.T) {
+	assets, err := compileAssets([]config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6,
+		Contract: "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", MinDeposit: "0.5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !belowMinimum("400000", assets.minRaw["USDT"]) || belowMinimum("500000", assets.minRaw["USDT"]) {
+		t.Fatal("0.4 USDT must be dust and 0.5 USDT must not")
+	}
 }
 
 type recordedCase struct {

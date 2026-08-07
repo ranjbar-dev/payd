@@ -21,8 +21,11 @@ import (
 	"payd/internal/config"
 	"payd/internal/decode"
 	"payd/internal/follower"
+	"payd/internal/lifecycle"
+	"payd/internal/matcher"
 	"payd/internal/seed"
 	"payd/internal/store"
+	walletpool "payd/internal/wallet"
 )
 
 func main() {
@@ -77,6 +80,10 @@ func run(args []string) error {
 	if err := db.InitializeWallet(ctx, wallet, cfg.Wallet.Account, cfg.Wallet.PoolInitialSize, cfg.Resources.ResourceWalletIndex); err != nil {
 		return err
 	}
+	depositPool, err := walletpool.NewPool(db, wallet, cfg)
+	if err != nil {
+		return err
+	}
 	chainClient, err := chain.New(cfg.Tron, logger)
 	if err != nil {
 		return err
@@ -85,7 +92,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	paymentDecoder, err := decode.New(chainClient.Read, db, cfg.Assets)
+	events := store.NewEventConfig(cfg.IPN, cfg.Assets)
+	orderMatcher := matcher.New(events)
+	paymentDecoder, err := decode.New(chainClient.Read, db, cfg.Assets, func(write *store.BlockWrite, payment store.PaymentRecord) error {
+		return orderMatcher.Match(write, payment)
+	})
 	if err != nil {
 		return err
 	}
@@ -93,8 +104,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	lifecycleWorker, err := lifecycle.New(db, depositPool, cfg.Wallet.Cooldown, logger, events)
+	if err != nil {
+		return err
+	}
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() {
 		defer workers.Done()
 		parameterWorker.Run(ctx)
@@ -102,6 +117,10 @@ func run(args []string) error {
 	go func() {
 		defer workers.Done()
 		followerWorker.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		lifecycleWorker.Run(ctx)
 	}()
 	defer workers.Wait()
 
@@ -123,6 +142,10 @@ func run(args []string) error {
 			if err := paymentDecoder.UpdateAssets(next.Assets); err != nil {
 				return fmt.Errorf("reload decoder assets: %w", err)
 			}
+			events = store.NewEventConfig(next.IPN, next.Assets)
+			orderMatcher.UpdateEvents(events)
+			lifecycleWorker.UpdateEvents(events)
+			depositPool.UpdateConfig(next)
 			cfg = next
 		}
 	}

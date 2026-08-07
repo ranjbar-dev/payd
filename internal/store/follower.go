@@ -51,6 +51,14 @@ type PaymentRecord struct {
 	DetectedAt     int64
 }
 
+type AttributionOrder struct {
+	ID         string
+	Asset      string
+	Status     string
+	CreatedAt  int64
+	ReleasedAt *int64
+}
+
 type RewindResult struct {
 	OrphanedPayments int64
 	RevertedOrders   []string
@@ -181,7 +189,7 @@ func (w *BlockWrite) UpsertPayment(payment PaymentRecord) (bool, error) {
           block_height = excluded.block_height,
           block_id = excluded.block_id,
           block_timestamp = excluded.block_timestamp,
-          status = CASE WHEN payments.status = 'orphaned' THEN 'seen' ELSE payments.status END,
+          status = CASE WHEN payments.status = 'orphaned' THEN excluded.status ELSE payments.status END,
           detected_at = COALESCE(payments.detected_at, excluded.detected_at)`,
 		payment.TxID, payment.LogIndex, payment.Direction, payment.BlockHeight, payment.BlockID, payment.BlockTimestamp,
 		payment.FromAddress, payment.ToAddress, payment.AddressID, payment.OrderID, payment.Asset, payment.AmountRaw,
@@ -194,11 +202,35 @@ func (w *BlockWrite) UpsertPayment(payment PaymentRecord) (bool, error) {
 		orderID = &oldOrder.String
 	}
 	if orderID != nil {
-		if _, err := recalculateOrder(w.tx, *orderID); err != nil {
+		if _, err := recalculateOrderWithTransition(w.tx, *orderID, !payment.IsDust); err != nil {
+			return false, err
+		}
+	}
+	if payment.AddressID != nil {
+		if err := recalculateBalance(w.tx, *payment.AddressID, payment.Asset); err != nil {
 			return false, err
 		}
 	}
 	return oldStatus == "orphaned", nil
+}
+
+// AttributionOrder returns the address's retained assignment; matcher applies the asset, state, and chain-time checks (ORD-002/020).
+func (w *BlockWrite) AttributionOrder(addressID int64) (AttributionOrder, bool, error) {
+	var order AttributionOrder
+	var released sql.NullInt64
+	err := w.tx.QueryRow(`SELECT o.id, o.asset, o.status, o.created_at, a.released_at
+        FROM addresses a JOIN orders o ON o.id = a.assigned_order_id WHERE a.id = ?`, addressID).
+		Scan(&order.ID, &order.Asset, &order.Status, &order.CreatedAt, &released)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AttributionOrder{}, false, nil
+	}
+	if err != nil {
+		return AttributionOrder{}, false, fmt.Errorf("load attribution order: %w", err)
+	}
+	if released.Valid {
+		order.ReleasedAt = &released.Int64
+	}
+	return order, true, nil
 }
 
 // RewindChain orphans payments, recalculates affected orders, deletes orphaned blocks, and rewinds the cursor atomically (CHN-012/013).
@@ -236,6 +268,27 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindRe
 	if err := rows.Close(); err != nil {
 		return RewindResult{}, err
 	}
+	balanceRows, err := tx.Query(`SELECT DISTINCT address_id, asset FROM payments
+        WHERE block_height > ? AND address_id IS NOT NULL`, ancestorHeight)
+	if err != nil {
+		return RewindResult{}, fmt.Errorf("find reorg-affected balances: %w", err)
+	}
+	type balanceKey struct {
+		addressID int64
+		asset     string
+	}
+	var balances []balanceKey
+	for balanceRows.Next() {
+		var key balanceKey
+		if err := balanceRows.Scan(&key.addressID, &key.asset); err != nil {
+			_ = balanceRows.Close()
+			return RewindResult{}, err
+		}
+		balances = append(balances, key)
+	}
+	if err := balanceRows.Close(); err != nil {
+		return RewindResult{}, err
+	}
 	result, err := tx.ExecContext(ctx, "UPDATE payments SET status = 'orphaned' WHERE block_height > ?", ancestorHeight)
 	if err != nil {
 		return RewindResult{}, fmt.Errorf("orphan reorg payments: %w", err)
@@ -254,6 +307,11 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindRe
 			reverted = append(reverted, orderID)
 		}
 	}
+	for _, key := range balances {
+		if err := recalculateBalance(tx, key.addressID, key.asset); err != nil {
+			return RewindResult{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE height > ?", ancestorHeight); err != nil {
 		return RewindResult{}, fmt.Errorf("delete orphaned blocks: %w", err)
 	}
@@ -266,20 +324,66 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindRe
 	return RewindResult{OrphanedPayments: orphaned, RevertedOrders: reverted}, nil
 }
 
+func recalculateBalance(tx *sql.Tx, addressID int64, asset string) error {
+	rows, err := tx.Query(`SELECT amount_raw, direction, status, confirmed_at FROM payments
+        WHERE address_id = ? AND asset = ? AND status <> 'orphaned'`, addressID, asset)
+	if err != nil {
+		return fmt.Errorf("load balance payments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	pending := new(big.Int)
+	confirmed := new(big.Int)
+	for rows.Next() {
+		var amountRaw, direction, status string
+		var confirmedAt sql.NullInt64
+		if err := rows.Scan(&amountRaw, &direction, &status, &confirmedAt); err != nil {
+			return err
+		}
+		amount, ok := new(big.Int).SetString(amountRaw, 10)
+		if !ok || amount.Sign() < 0 {
+			return fmt.Errorf("invalid balance amount %q", amountRaw)
+		}
+		if direction == "out" {
+			amount.Neg(amount)
+		}
+		switch {
+		case status == "confirmed" || status == "unattributed" && confirmedAt.Valid:
+			confirmed.Add(confirmed, amount)
+		case status == "seen" || status == "unattributed" && !confirmedAt.Valid:
+			pending.Add(pending, amount)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO balances(address_id, asset, confirmed_raw, pending_raw)
+        VALUES (?, ?, ?, ?) ON CONFLICT(address_id, asset) DO UPDATE SET
+        confirmed_raw = excluded.confirmed_raw, pending_raw = excluded.pending_raw`,
+		addressID, asset, confirmed.String(), pending.String())
+	if err != nil {
+		return fmt.Errorf("store balance: %w", err)
+	}
+	return nil
+}
+
 func recalculateOrder(tx *sql.Tx, orderID string) (bool, error) {
+	return recalculateOrderWithTransition(tx, orderID, true)
+}
+
+func recalculateOrderWithTransition(tx *sql.Tx, orderID string, allowTransition bool) (bool, error) {
 	var expectedRaw, asset, oldStatus string
-	var createdAt int64
+	var addressID, createdAt int64
 	var releasedAt sql.NullInt64
-	err := tx.QueryRow(`SELECT o.expected_raw, o.asset, o.status, o.created_at, a.released_at
+	err := tx.QueryRow(`SELECT o.expected_raw, o.asset, o.status, o.address_id, o.created_at, a.released_at
         FROM orders o JOIN addresses a ON a.id = o.address_id WHERE o.id = ?`, orderID).
-		Scan(&expectedRaw, &asset, &oldStatus, &createdAt, &releasedAt)
+		Scan(&expectedRaw, &asset, &oldStatus, &addressID, &createdAt, &releasedAt)
 	if err != nil {
 		return false, fmt.Errorf("load order %s for recalculation: %w", orderID, err)
 	}
-	rows, err := tx.Query(`SELECT amount_raw FROM payments WHERE order_id = ?
+	rows, err := tx.Query(`SELECT amount_raw FROM payments WHERE order_id = ? AND address_id = ?
         AND status <> 'orphaned' AND direction = 'in' AND asset = ?
         AND block_timestamp >= ? AND (? IS NULL OR block_timestamp < ?)`,
-		orderID, asset, createdAt, releasedAt, releasedAt)
+		orderID, addressID, asset, createdAt, releasedAt, releasedAt)
 	if err != nil {
 		return false, fmt.Errorf("load payments for order %s: %w", orderID, err)
 	}
@@ -309,7 +413,7 @@ func recalculateOrder(tx *sql.Tx, orderID string) (bool, error) {
 		overpaid.SetInt64(0)
 	}
 	newStatus := oldStatus
-	if oldStatus == "pending" || oldStatus == "partial" || oldStatus == "paid" || oldStatus == "confirmed" {
+	if allowTransition && (oldStatus == "pending" || oldStatus == "partial" || oldStatus == "paid" || oldStatus == "confirmed") {
 		switch {
 		case received.Cmp(expected) >= 0:
 			newStatus = "paid"

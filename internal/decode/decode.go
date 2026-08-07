@@ -28,9 +28,12 @@ type ReceiptReader interface {
 	GetTransactionInfoByBlockNum(context.Context, int64) (json.RawMessage, error)
 }
 
+type PaymentMatcher func(*store.BlockWrite, store.PaymentRecord) error
+
 type Decoder struct {
 	reader ReceiptReader
 	owned  func(context.Context) ([]store.OwnedAddress, error)
+	match  PaymentMatcher
 	mu     sync.RWMutex
 	assets assetSet
 	now    func() time.Time
@@ -39,6 +42,7 @@ type Decoder struct {
 type assetSet struct {
 	native  string
 	byToken map[string]string
+	minRaw  map[string]*big.Int
 }
 
 type candidate struct {
@@ -80,15 +84,15 @@ type receipt struct {
 	} `json:"log"`
 }
 
-func New(reader ReceiptReader, database *store.Store, assets []config.Asset) (*Decoder, error) {
-	if reader == nil || database == nil {
-		return nil, errors.New("decoder requires receipt reader and store")
+func New(reader ReceiptReader, database *store.Store, assets []config.Asset, match PaymentMatcher) (*Decoder, error) {
+	if reader == nil || database == nil || match == nil {
+		return nil, errors.New("decoder requires receipt reader, store, and matcher")
 	}
 	set, err := compileAssets(assets)
 	if err != nil {
 		return nil, err
 	}
-	return &Decoder{reader: reader, owned: database.OwnedAddresses, assets: set, now: time.Now}, nil
+	return &Decoder{reader: reader, owned: database.OwnedAddresses, match: match, assets: set, now: time.Now}, nil
 }
 
 // UpdateAssets applies CFG-006 asset reloads without racing the follower.
@@ -139,7 +143,7 @@ func (d *Decoder) Prepare(ctx context.Context, block follower.Block) (store.Bloc
 	}
 	return func(write *store.BlockWrite) error {
 		for _, payment := range payments {
-			if _, err := write.UpsertPayment(payment); err != nil {
+			if err := d.match(write, payment); err != nil {
 				return err
 			}
 		}
@@ -183,7 +187,7 @@ func screen(block follower.Block, owned map[string]int64, assets assetSet) ([]ca
 			candidates = append(candidates, candidate{txID: tx.ID, native: &store.PaymentRecord{
 				TxID: tx.ID, LogIndex: 0, Direction: direction, BlockHeight: block.Height, BlockID: block.ID,
 				BlockTimestamp: block.Timestamp, FromAddress: from, ToAddress: to, AddressID: &addressID,
-				Asset: assets.native, AmountRaw: amount,
+				Asset: assets.native, AmountRaw: amount, IsDust: belowMinimum(amount, assets.minRaw[assets.native]),
 			}}) // DET-002/002a/002b
 		case "TriggerSmartContract":
 			contractKey, _, err := tronAddress(contract.Parameter.Value.Contract)
@@ -271,7 +275,7 @@ func credit(block follower.Block, candidates []candidate, raw json.RawMessage, o
 			payments = append(payments, store.PaymentRecord{
 				TxID: item.txID, LogIndex: logIndex, Direction: direction, BlockHeight: block.Height, BlockID: block.ID,
 				BlockTimestamp: block.Timestamp, FromAddress: from, ToAddress: to, AddressID: &addressID,
-				Asset: asset, AmountRaw: amount, DetectedAt: detectedAt,
+				Asset: asset, AmountRaw: amount, IsDust: belowMinimum(amount, assets.minRaw[asset]), DetectedAt: detectedAt,
 			})
 		}
 	}
@@ -279,8 +283,13 @@ func credit(block follower.Block, candidates []candidate, raw json.RawMessage, o
 }
 
 func compileAssets(assets []config.Asset) (assetSet, error) {
-	set := assetSet{byToken: make(map[string]string)}
+	set := assetSet{byToken: make(map[string]string), minRaw: make(map[string]*big.Int)}
 	for _, asset := range assets {
+		minimum, err := parseUnits(asset.MinDeposit, asset.Decimals)
+		if err != nil {
+			return assetSet{}, fmt.Errorf("asset %s min_deposit: %w", asset.Symbol, err)
+		}
+		set.minRaw[asset.Symbol] = minimum
 		switch asset.Kind {
 		case "native":
 			set.native = asset.Symbol
@@ -293,6 +302,30 @@ func compileAssets(assets []config.Asset) (assetSet, error) {
 		}
 	}
 	return set, nil
+}
+
+func parseUnits(value string, decimals int) (*big.Int, error) {
+	if value == "" {
+		return new(big.Int), nil
+	}
+	whole, fraction, _ := strings.Cut(value, ".")
+	if len(fraction) > decimals {
+		return nil, errors.New("has more fractional digits than asset decimals")
+	}
+	digits := whole + fraction + strings.Repeat("0", decimals-len(fraction))
+	amount, ok := new(big.Int).SetString(digits, 10)
+	if !ok || amount.Sign() < 0 {
+		return nil, errors.New("invalid decimal amount")
+	}
+	return amount, nil
+}
+
+func belowMinimum(amountRaw string, minimum *big.Int) bool {
+	if minimum == nil || minimum.Sign() == 0 {
+		return false
+	}
+	amount, ok := new(big.Int).SetString(amountRaw, 10)
+	return ok && amount.Cmp(minimum) < 0
 }
 
 func direction(from, to string, owned map[string]int64) (string, int64, bool) {
