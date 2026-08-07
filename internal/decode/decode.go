@@ -285,7 +285,7 @@ func credit(block follower.Block, candidates []candidate, raw json.RawMessage, o
 func compileAssets(assets []config.Asset) (assetSet, error) {
 	set := assetSet{byToken: make(map[string]string), minRaw: make(map[string]*big.Int)}
 	for _, asset := range assets {
-		minimum, err := parseUnits(asset.MinDeposit, asset.Decimals)
+		minimum, err := store.ParseUnits(asset.MinDeposit, asset.Decimals)
 		if err != nil {
 			return assetSet{}, fmt.Errorf("asset %s min_deposit: %w", asset.Symbol, err)
 		}
@@ -302,22 +302,6 @@ func compileAssets(assets []config.Asset) (assetSet, error) {
 		}
 	}
 	return set, nil
-}
-
-func parseUnits(value string, decimals int) (*big.Int, error) {
-	if value == "" {
-		return new(big.Int), nil
-	}
-	whole, fraction, _ := strings.Cut(value, ".")
-	if len(fraction) > decimals {
-		return nil, errors.New("has more fractional digits than asset decimals")
-	}
-	digits := whole + fraction + strings.Repeat("0", decimals-len(fraction))
-	amount, ok := new(big.Int).SetString(digits, 10)
-	if !ok || amount.Sign() < 0 {
-		return nil, errors.New("invalid decimal amount")
-	}
-	return amount, nil
 }
 
 func belowMinimum(amountRaw string, minimum *big.Int) bool {

@@ -30,6 +30,8 @@ type CreateOrderRequest struct {
 	TTL         time.Duration
 	Metadata    string
 	Consumer    string
+	PriceUSD    *string
+	PriceAt     *int64
 }
 
 type Pool struct {
@@ -91,13 +93,17 @@ func (p *Pool) CreateOrder(ctx context.Context, request CreateOrderRequest, now 
 	if ttl <= 0 {
 		return store.Order{}, false, ErrInvalidOrder
 	}
-	price, priceAt, err := p.price(ctx, request.Asset, now)
-	if err != nil {
-		return store.Order{}, false, err
+	priceUSD, priceAt := request.PriceUSD, request.PriceAt
+	if priceUSD == nil || priceAt == nil {
+		price, fetchedAt, err := p.price(ctx, request.Asset, now)
+		if err != nil {
+			return store.Order{}, false, err
+		}
+		priceUSD, priceAt = &price, &fetchedAt
 	}
 	params := store.CreateOrderParams{
 		ExternalRef: request.ExternalRef, Asset: request.Asset, ExpectedRaw: amount.String(), Metadata: metadata,
-		Consumer: consumer, ExpiresAt: now.Add(ttl).UTC().Unix(), PriceUSD: &price, PriceAt: &priceAt,
+		Consumer: consumer, ExpiresAt: now.Add(ttl).UTC().Unix(), PriceUSD: priceUSD, PriceAt: priceAt,
 	}
 	return p.store.CreateOrder(ctx, p.derive, p.config.Wallet.PoolMaxSize, params, now)
 }

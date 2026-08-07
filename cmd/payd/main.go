@@ -13,10 +13,12 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/awnumar/memguard"
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
 
+	"payd/internal/api"
 	"payd/internal/chain"
 	"payd/internal/config"
 	"payd/internal/confirm"
@@ -58,7 +60,6 @@ func run(args []string) error {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	db, err := store.Open(ctx, cfg.Database.Path)
 	if err != nil {
 		return err
@@ -86,6 +87,14 @@ func run(args []string) error {
 	depositPool, err := walletpool.NewPool(db, wallet, cfg)
 	if err != nil {
 		return err
+	}
+	apiServer, err := api.New(db, depositPool, cfg, logger)
+	if err != nil {
+		return err
+	}
+	httpServer := &http.Server{
+		Addr: cfg.Server.Listen, Handler: apiServer.Handler(),
+		ReadTimeout: cfg.Server.ReadTimeout, WriteTimeout: cfg.Server.WriteTimeout,
 	}
 	chainClient, err := chain.New(cfg.Tron, logger)
 	if err != nil {
@@ -149,7 +158,21 @@ func run(args []string) error {
 		defer workers.Done()
 		ipnWorker.Run(ctx)
 	}()
-	defer workers.Wait()
+	serverErrors := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- err
+		}
+	}()
+	defer func() {
+		stop()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdown); err != nil {
+			logger.Error("shut down API", "error", err)
+		}
+		workers.Wait()
+	}()
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
@@ -160,6 +183,8 @@ func run(args []string) error {
 		case <-ctx.Done():
 			logger.Info("payd stopped")
 			return nil
+		case err := <-serverErrors:
+			return fmt.Errorf("serve API: %w", err)
 		case <-hup:
 			next, err := reload(ctx, logger, db, wallet, *configPath, cfg)
 			if err != nil {
@@ -176,6 +201,7 @@ func run(args []string) error {
 			confirmationWorker.UpdateEvents(events)
 			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
+			apiServer.UpdateConfig(next)
 			cfg = next
 		}
 	}

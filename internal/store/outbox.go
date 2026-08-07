@@ -309,3 +309,22 @@ func FormatUnits(raw string, decimals int) (string, error) {
 	}
 	return hdwallet.FormatUnits(amount, uint8(decimals)), nil // IPN-020
 }
+
+func ParseUnits(value string, decimals int) (*big.Int, error) {
+	if decimals < 0 || decimals > 255 {
+		return nil, errors.New("invalid asset decimals")
+	}
+	if value == "" {
+		return new(big.Int), nil
+	}
+	whole, fraction, _ := strings.Cut(value, ".")
+	if len(fraction) > decimals {
+		return nil, errors.New("has more fractional digits than asset decimals")
+	}
+	digits := whole + fraction + strings.Repeat("0", decimals-len(fraction))
+	amount, ok := new(big.Int).SetString(digits, 10)
+	if !ok || amount.Sign() < 0 {
+		return nil, errors.New("invalid decimal amount")
+	}
+	return amount, nil
+}

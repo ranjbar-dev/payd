@@ -18,7 +18,14 @@ var (
 	ErrOrderNotFound       = errors.New("order not found")
 	ErrOrderRequiresForce  = errors.New("order cancellation requires force")
 	ErrOrderTerminal       = errors.New("order is terminal")
+	ErrInvalidResolution   = errors.New("invalid order resolution")
+	ErrPaymentNotFound     = errors.New("payment not found")
 )
+
+type ExternalRefConflictError struct{ Fields []string }
+
+func (e *ExternalRefConflictError) Error() string { return ErrExternalRefConflict.Error() }
+func (e *ExternalRefConflictError) Unwrap() error { return ErrExternalRefConflict }
 
 type Order struct {
 	ID             string
@@ -132,8 +139,18 @@ func (s *Store) CreateOrder(ctx context.Context, derive func(uint32) (string, er
 		if err != nil {
 			return Order{}, false, err
 		}
-		if existing.Asset != params.Asset || existing.ExpectedRaw != params.ExpectedRaw || existing.Consumer != params.Consumer {
-			return Order{}, false, ErrExternalRefConflict
+		var conflicts []string
+		if existing.Asset != params.Asset {
+			conflicts = append(conflicts, "asset")
+		}
+		if existing.ExpectedRaw != params.ExpectedRaw {
+			conflicts = append(conflicts, "expected_raw")
+		}
+		if existing.Consumer != params.Consumer {
+			conflicts = append(conflicts, "consumer")
+		}
+		if len(conflicts) > 0 {
+			return Order{}, false, &ExternalRefConflictError{Fields: conflicts}
 		}
 		return existing, false, nil
 	}
@@ -295,7 +312,11 @@ func (s *Store) DisableAddress(ctx context.Context, address string) error {
 }
 
 func (s *Store) Order(ctx context.Context, id string) (Order, error) {
-	return scanOrder(s.normal.QueryRowContext(ctx, orderSelect+" WHERE id = ?", id))
+	order, err := scanOrder(s.normal.QueryRowContext(ctx, orderSelect+" WHERE id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Order{}, ErrOrderNotFound
+	}
+	return order, err
 }
 
 // CancelOrder enforces force for funded/non-pending states and preserves funded terminal orders (ORD-005a/011, POOL-004).
@@ -343,7 +364,7 @@ func (s *Store) CancelOrder(ctx context.Context, id string, force bool, cooldown
 // ResolveFundedOrder records the operator disposition and audit entry (ORD-005d).
 func (s *Store) ResolveFundedOrder(ctx context.Context, id, resolution, note, actor string, now time.Time) error {
 	if resolution != "refunded" && resolution != "written_off" && resolution != "reattributed" {
-		return errors.New("resolution must be refunded, written_off, or reattributed")
+		return ErrInvalidResolution
 	}
 	tx, err := s.normal.BeginTx(ctx, nil)
 	if err != nil {
@@ -444,6 +465,12 @@ func (s *Store) AttributePayment(ctx context.Context, paymentID int64, orderID s
 		return fmt.Errorf("begin manual attribution: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRow("SELECT 1 FROM orders WHERE id = ?", orderID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrOrderNotFound
+	} else if err != nil {
+		return fmt.Errorf("load attribution order: %w", err)
+	}
 	result, err := tx.Exec(`UPDATE payments SET order_id = ?, status = CASE WHEN confirmed_at IS NULL THEN 'seen' ELSE 'confirmed' END
         WHERE id = ? AND status = 'unattributed'`, orderID, paymentID)
 	if err != nil {
@@ -454,7 +481,7 @@ func (s *Store) AttributePayment(ctx context.Context, paymentID int64, orderID s
 		if err != nil {
 			return err
 		}
-		return ErrOrderNotFound
+		return ErrPaymentNotFound
 	}
 	if _, err := recalculateOrder(tx, orderID); err != nil {
 		return err
