@@ -52,6 +52,9 @@ func TestReorgOrphansRecalculatesAndReincludesPayment(t *testing.T) {
 		t.Fatalf("rewind result = %+v", result)
 	}
 	assertOrderAndPayment(t, database, "pending", "0", "orphaned", 1) // TST-003
+	if events, err := database.OutboxCount(ctx, "order.reverted"); err != nil || events != 1 {
+		t.Fatalf("order.reverted events=%d err=%v", events, err)
+	}
 
 	payment.BlockID = "B2"
 	applyErr := errors.New("stub matcher failed")

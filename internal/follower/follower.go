@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,8 @@ type Worker struct {
 	suspected        atomic.Uint64
 	confirmed        atomic.Uint64
 	halted           atomic.Bool
+	eventsMu         sync.RWMutex
+	events           store.EventConfig
 }
 
 type reorgSuspicion struct {
@@ -60,7 +63,7 @@ type reorgSuspicion struct {
 	firstSeen     time.Time
 }
 
-func New(reader ChainReader, database *store.Store, prepare PrepareBlock, pollInterval time.Duration, reorgDepth int, logger *slog.Logger) (*Worker, error) {
+func New(reader ChainReader, database *store.Store, prepare PrepareBlock, pollInterval time.Duration, reorgDepth int, logger *slog.Logger, eventConfigs ...store.EventConfig) (*Worker, error) {
 	if reader == nil || database == nil {
 		return nil, errors.New("follower requires chain reader and store")
 	}
@@ -76,10 +79,20 @@ func New(reader ChainReader, database *store.Store, prepare PrepareBlock, pollIn
 	if prepare == nil {
 		prepare = func(context.Context, Block) (store.BlockApply, error) { return nil, nil }
 	}
+	var events store.EventConfig
+	if len(eventConfigs) > 0 {
+		events = eventConfigs[0]
+	}
 	return &Worker{
 		reader: reader, store: database, prepare: prepare, logger: logger,
-		pollInterval: pollInterval, reorgDepth: reorgDepth, now: time.Now, sleep: sleepContext,
+		pollInterval: pollInterval, reorgDepth: reorgDepth, now: time.Now, sleep: sleepContext, events: events,
 	}, nil
+}
+
+func (w *Worker) UpdateEvents(events store.EventConfig) {
+	w.eventsMu.Lock()
+	w.events = events
+	w.eventsMu.Unlock()
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -269,7 +282,10 @@ func (w *Worker) recoverReorg(ctx context.Context, lastHeight int64, replacement
 			return w.halt(fmt.Errorf("%w: retained block %d is unavailable", ErrReorgDepthExceeded, height))
 		}
 		if replacement.ID == storedBlock.ID {
-			_, err := w.store.RewindChain(ctx, height)
+			w.eventsMu.RLock()
+			events := w.events
+			w.eventsMu.RUnlock()
+			_, err := w.store.RewindChain(ctx, height, events)
 			return err // CHN-012/013: forward replay resumes in Tick from this ancestor.
 		}
 		depth := lastHeight - height + 1

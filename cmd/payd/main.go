@@ -22,6 +22,7 @@ import (
 	"payd/internal/confirm"
 	"payd/internal/decode"
 	"payd/internal/follower"
+	"payd/internal/ipn"
 	"payd/internal/lifecycle"
 	"payd/internal/matcher"
 	"payd/internal/seed"
@@ -101,7 +102,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	followerWorker, err := follower.New(chainClient.Read, db, paymentDecoder.Prepare, cfg.Tron.PollInterval, cfg.Tron.ReorgDepth, logger)
+	followerWorker, err := follower.New(chainClient.Read, db, paymentDecoder.Prepare, cfg.Tron.PollInterval, cfg.Tron.ReorgDepth, logger, events)
 	if err != nil {
 		return err
 	}
@@ -113,8 +114,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	ipnWorker, err := ipn.New(db, cfg.IPN, logger)
+	if err != nil {
+		return err
+	}
 	var workers sync.WaitGroup
-	workers.Add(4)
+	workers.Add(5)
 	go func() {
 		defer workers.Done()
 		parameterWorker.Run(ctx)
@@ -130,6 +135,10 @@ func run(args []string) error {
 	go func() {
 		defer workers.Done()
 		confirmationWorker.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		ipnWorker.Run(ctx)
 	}()
 	defer workers.Wait()
 
@@ -153,8 +162,10 @@ func run(args []string) error {
 			}
 			events = store.NewEventConfig(next.IPN, next.Assets)
 			orderMatcher.UpdateEvents(events)
+			followerWorker.UpdateEvents(events)
 			lifecycleWorker.UpdateEvents(events)
 			confirmationWorker.UpdateEvents(events)
+			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
 			cfg = next
 		}
@@ -177,7 +188,7 @@ func reload(ctx context.Context, logger *slog.Logger, db *store.Store, wallet *h
 	if len(blocking) > 0 {
 		return current, fmt.Errorf("consumers are named by non-terminal orders %s (CFG-006)", strings.Join(blocking, ","))
 	}
-	if err := db.ApplyConfigReload(ctx, wallet, next.Wallet.Account, next.Resources.ResourceWalletIndex, disabled); err != nil {
+	if err := db.ApplyConfigReload(ctx, wallet, next.Wallet.Account, next.Resources.ResourceWalletIndex, config.RemovedConsumers(current, next)); err != nil {
 		return current, err
 	}
 	logAssets(logger, next.Assets)

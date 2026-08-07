@@ -415,3 +415,19 @@ func DisabledConsumers(current, next Config) []string {
 	slices.Sort(disabled)
 	return disabled
 }
+
+// RemovedConsumers excludes consumers that are merely disabled, whose queued rows must resume if re-enabled (IPN-014/CFG-010).
+func RemovedConsumers(current, next Config) []string {
+	nextNames := make(map[string]struct{}, len(next.IPN.Consumers))
+	for _, consumer := range next.IPN.Consumers {
+		nextNames[consumer.Name] = struct{}{}
+	}
+	var removed []string
+	for _, consumer := range current.IPN.Consumers {
+		if _, present := nextNames[consumer.Name]; !present {
+			removed = append(removed, consumer.Name)
+		}
+	}
+	slices.Sort(removed)
+	return removed
+}

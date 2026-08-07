@@ -24,8 +24,9 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	normal *sql.DB
-	full   *sql.DB // ARC-006a: reserved for irreversible-side-effect writes only.
+	normal      *sql.DB
+	full        *sql.DB // ARC-006a: reserved for irreversible-side-effect writes only.
+	outboxReady chan struct{}
 }
 
 type ChainParameters struct {
@@ -71,7 +72,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = normal.Close()
 		return nil, err
 	}
-	s := &Store{normal: normal, full: full}
+	s := &Store{normal: normal, full: full, outboxReady: make(chan struct{}, 1)}
 	if err := s.migrate(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -334,9 +335,9 @@ func (s *Store) ApplyConfigReload(ctx context.Context, wallet *hdwallet.HDWallet
 		return fmt.Errorf("resource wallet index %d is not the configured disabled address (CFG-013)", resourceIndex)
 	}
 	for _, consumer := range consumers {
-		reason := fmt.Sprintf("consumer %q removed or disabled by config reload", consumer)
+		reason := fmt.Sprintf("consumer %q removed by config reload", consumer)
 		if _, err := tx.ExecContext(ctx, `UPDATE ipn_outbox SET status = 'dead', last_error = ?
-            WHERE consumer = ? AND status = 'pending'`, reason, consumer); err != nil {
+			WHERE consumer = ? AND status = 'pending'`, reason, consumer); err != nil {
 			return fmt.Errorf("dead-letter consumer %q: %w", consumer, err)
 		}
 	}

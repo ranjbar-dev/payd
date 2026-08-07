@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	hdwallet "github.com/ranjbar-dev/hd-wallet"
+
 	"payd/internal/config"
 )
 
@@ -18,6 +20,19 @@ type EventConsumer struct {
 	URL            string
 	Enabled        bool
 	ReceivesGlobal bool
+}
+
+// IPNEvent is an immutable outbox snapshot claimed for delivery.
+type IPNEvent struct {
+	ID          string
+	OrderID     string
+	SequenceKey string
+	Consumer    string
+	TargetURL   string
+	EventType   string
+	Payload     json.RawMessage
+	Attempts    int
+	CreatedAt   int64
 }
 
 type EventConfig struct {
@@ -43,6 +58,161 @@ func (s *Store) OutboxCount(ctx context.Context, eventType string) (int, error) 
 	var count int
 	err := s.normal.QueryRowContext(ctx, "SELECT COUNT(*) FROM ipn_outbox WHERE event_type = ?", eventType).Scan(&count)
 	return count, err
+}
+
+// OutboxReady wakes W-004 after a producer commits an event.
+func (s *Store) OutboxReady() <-chan struct{} { return s.outboxReady }
+
+func (s *Store) notifyOutbox() {
+	select {
+	case s.outboxReady <- struct{}{}:
+	default:
+	}
+}
+
+// EnqueueGlobalEvent writes a standalone global notification atomically. State-changing callers must use their existing transaction instead (IPN-001/003/004).
+func (s *Store) EnqueueGlobalEvent(ctx context.Context, events EventConfig, sequenceKey, eventType string, payload map[string]any, now time.Time) error {
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin global event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := enqueueGlobalEvent(tx, events, sequenceKey, eventType, payload, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit global event: %w", err)
+	}
+	s.notifyOutbox()
+	return nil
+}
+
+// ClaimIPN atomically claims the oldest eligible head from any enabled pair (IPN-011..013).
+func (s *Store) ClaimIPN(ctx context.Context, now time.Time, enabledConsumers []string) (IPNEvent, bool, error) {
+	if len(enabledConsumers) == 0 {
+		return IPNEvent{}, false, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(enabledConsumers)), ",")
+	args := make([]any, 0, len(enabledConsumers)+1)
+	args = append(args, now.UTC().Unix())
+	for _, consumer := range enabledConsumers {
+		args = append(args, consumer)
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return IPNEvent{}, false, fmt.Errorf("begin IPN claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	query := `SELECT q.rowid, q.id, COALESCE(q.order_id, ''), q.sequence_key, q.consumer,
+        q.target_url, q.event_type, q.payload, q.attempts, q.created_at
+        FROM ipn_outbox q
+        WHERE q.status = 'pending' AND q.next_attempt_at <= ? AND q.consumer IN (` + placeholders + `)
+          AND NOT EXISTS (
+            SELECT 1 FROM ipn_outbox previous
+            WHERE previous.sequence_key = q.sequence_key AND previous.consumer = q.consumer
+              AND (previous.created_at < q.created_at
+                OR (previous.created_at = q.created_at AND previous.rowid < q.rowid))
+              AND previous.status <> 'delivered'
+          )
+        ORDER BY q.next_attempt_at, q.created_at, q.rowid LIMIT 1`
+	var event IPNEvent
+	var rowID int64
+	var payload string
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&rowID, &event.ID, &event.OrderID, &event.SequenceKey,
+		&event.Consumer, &event.TargetURL, &event.EventType, &payload, &event.Attempts, &event.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return IPNEvent{}, false, nil
+		}
+		return IPNEvent{}, false, fmt.Errorf("select IPN claim: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE ipn_outbox SET status = 'failed', attempts = attempts + 1 WHERE rowid = ? AND status = 'pending'", rowID)
+	if err != nil {
+		return IPNEvent{}, false, fmt.Errorf("claim IPN %s: %w", event.ID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return IPNEvent{}, false, err
+	}
+	if changed != 1 {
+		return IPNEvent{}, false, tx.Commit()
+	}
+	if err := tx.Commit(); err != nil {
+		return IPNEvent{}, false, fmt.Errorf("commit IPN claim: %w", err)
+	}
+	event.Payload = json.RawMessage(payload)
+	event.Attempts++
+	return event, true, nil
+}
+
+// RecoverIPNClaims makes crash-interrupted deliveries eligible again; duplicate delivery keeps the same event ID (IPN-022).
+func (s *Store) RecoverIPNClaims(ctx context.Context) error {
+	_, err := s.normal.ExecContext(ctx, "UPDATE ipn_outbox SET status = 'pending' WHERE status = 'failed'")
+	return err
+}
+
+func (s *Store) DeliverIPN(ctx context.Context, id string, statusCode int, now time.Time) error {
+	_, err := s.normal.ExecContext(ctx, `UPDATE ipn_outbox SET status = 'delivered', delivered_at = ?,
+        last_error = NULL, last_status_code = ? WHERE id = ? AND status = 'failed'`, now.UTC().Unix(), statusCode, id)
+	if err == nil {
+		s.notifyOutbox()
+	}
+	return err
+}
+
+func (s *Store) FailIPN(ctx context.Context, id, message string, statusCode *int, dead bool, nextAttempt time.Time) error {
+	status := "pending"
+	if dead {
+		status = "dead"
+	}
+	var code any
+	if statusCode != nil {
+		code = *statusCode
+	}
+	_, err := s.normal.ExecContext(ctx, `UPDATE ipn_outbox SET status = ?, next_attempt_at = ?,
+        last_error = ?, last_status_code = ? WHERE id = ? AND status = 'failed'`,
+		status, nextAttempt.UTC().Unix(), message, code, id)
+	if err == nil && !dead {
+		s.notifyOutbox()
+	}
+	return err
+}
+
+// RetryIPN resets one dead row for explicit manual redelivery (IPN-010).
+func (s *Store) RetryIPN(ctx context.Context, id string, now time.Time) (bool, error) {
+	result, err := s.normal.ExecContext(ctx, `UPDATE ipn_outbox SET status = 'pending', attempts = 0,
+        next_attempt_at = ?, last_error = NULL, last_status_code = NULL, delivered_at = NULL
+        WHERE id = ? AND status = 'dead'`, now.UTC().Unix(), id)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err == nil && changed == 1 {
+		s.notifyOutbox()
+	}
+	return changed == 1, err
+}
+
+// IPNCurrentStatus reads only the mutable status field added at send time (IPN-021a).
+func (s *Store) IPNCurrentStatus(ctx context.Context, event IPNEvent) (string, error) {
+	var status string
+	if event.OrderID != "" {
+		err := s.normal.QueryRowContext(ctx, "SELECT status FROM orders WHERE id = ?", event.OrderID).Scan(&status)
+		return status, err
+	}
+	if id, ok := strings.CutPrefix(event.SequenceKey, "withdrawal:"); ok {
+		err := s.normal.QueryRowContext(ctx, "SELECT status FROM withdrawals WHERE id = ?", id).Scan(&status)
+		if err == nil || !errors.Is(err, sql.ErrNoRows) {
+			return status, err
+		}
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+		return "", err
+	}
+	if raw, ok := snapshot["status"]; ok {
+		_ = json.Unmarshal(raw, &status)
+	}
+	return status, nil
 }
 
 func (w *BlockWrite) PaymentExists(txID string, logIndex int) (bool, error) {
@@ -103,15 +273,21 @@ func enqueueGlobalEvent(tx *sql.Tx, events EventConfig, sequenceKey, eventType s
 }
 
 func insertOutbox(tx *sql.Tx, orderID, sequenceKey, consumer, targetURL, eventType string, payload map[string]any, status string, lastError any, now time.Time) error {
+	if sequenceKey == "" {
+		return errors.New("IPN sequence_key must not be empty (IPN-011)")
+	}
 	id, err := newULID(now)
 	if err != nil {
 		return err
 	}
-	snapshot := make(map[string]any, len(payload)+3)
+	snapshot := make(map[string]any, len(payload)+4)
 	for key, value := range payload {
 		snapshot[key] = value
 	}
-	snapshot["event_type"], snapshot["occurred_at"], snapshot["consumer"] = eventType, now.UTC().Unix(), consumer
+	delete(snapshot, "current_status")
+	delete(snapshot, "snapshot_age_seconds")
+	snapshot["event_id"], snapshot["event_type"] = id, eventType
+	snapshot["occurred_at"], snapshot["consumer"] = now.UTC().Unix(), consumer
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		return fmt.Errorf("marshal %s event: %w", eventType, err)
@@ -128,16 +304,8 @@ func insertOutbox(tx *sql.Tx, orderID, sequenceKey, consumer, targetURL, eventTy
 
 func FormatUnits(raw string, decimals int) (string, error) {
 	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() < 0 {
+	if !ok || amount.Sign() < 0 || decimals < 0 || decimals > 255 {
 		return "", fmt.Errorf("invalid base-unit amount %q", raw)
 	}
-	if decimals == 0 {
-		return amount.String(), nil
-	}
-	digits := amount.String()
-	if len(digits) <= decimals {
-		digits = strings.Repeat("0", decimals-len(digits)+1) + digits
-	}
-	point := len(digits) - decimals
-	return digits[:point] + "." + digits[point:], nil
+	return hdwallet.FormatUnits(amount, uint8(decimals)), nil // IPN-020
 }

@@ -184,6 +184,7 @@ func (s *Store) CommitBlock(ctx context.Context, block BlockRecord, reorgDepth i
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit block %d: %w", block.Height, err)
 	}
+	s.notifyOutbox()
 	return nil
 }
 
@@ -253,7 +254,12 @@ func (w *BlockWrite) AttributionOrder(addressID int64) (AttributionOrder, bool, 
 }
 
 // RewindChain orphans payments, recalculates affected orders, deletes orphaned blocks, and rewinds the cursor atomically (CHN-012/013).
-func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindResult, error) {
+func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64, eventConfigs ...EventConfig) (RewindResult, error) {
+	var events EventConfig
+	if len(eventConfigs) > 0 {
+		events = eventConfigs[0]
+	}
+	now := time.Now().UTC()
 	tx, err := s.normal.BeginTx(ctx, nil)
 	if err != nil {
 		return RewindResult{}, fmt.Errorf("begin chain rewind: %w", err)
@@ -324,6 +330,15 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindRe
 		}
 		if wasReverted {
 			reverted = append(reverted, orderID)
+			var status string
+			if err := tx.QueryRow("SELECT status FROM orders WHERE id = ?", orderID).Scan(&status); err != nil {
+				return RewindResult{}, err
+			}
+			if err := enqueueOrderEvent(tx, events, orderID, "order.reverted", map[string]any{
+				"order_id": orderID, "status": status,
+			}, now); err != nil {
+				return RewindResult{}, fmt.Errorf("enqueue reorg reversal: %w", err)
+			}
 		}
 	}
 	for _, key := range balances {
@@ -334,12 +349,13 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64) (RewindRe
 	if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE height > ?", ancestorHeight); err != nil {
 		return RewindResult{}, fmt.Errorf("delete orphaned blocks: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE crawler_state SET last_height = ?, updated_at = ? WHERE id = 1`, ancestorHeight, time.Now().UTC().Unix()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE crawler_state SET last_height = ?, updated_at = ? WHERE id = 1`, ancestorHeight, now.Unix()); err != nil {
 		return RewindResult{}, fmt.Errorf("rewind crawler cursor: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return RewindResult{}, fmt.Errorf("commit chain rewind: %w", err)
 	}
+	s.notifyOutbox()
 	return RewindResult{OrphanedPayments: orphaned, RevertedOrders: reverted}, nil
 }
 

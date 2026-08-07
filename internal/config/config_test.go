@@ -93,6 +93,13 @@ func TestReloadScopeAndDisabledConsumers(t *testing.T) {
 	if got := DisabledConsumers(current, next); len(got) != 1 || got[0] != "local" {
 		t.Fatalf("disabled consumers = %v", got)
 	}
+	if got := RemovedConsumers(current, next); len(got) != 0 {
+		t.Fatalf("disabled consumer reported removed = %v", got)
+	}
+	next.IPN.Consumers = nil
+	if got := RemovedConsumers(current, next); len(got) != 1 || got[0] != "local" {
+		t.Fatalf("removed consumers = %v", got)
+	}
 }
 
 func TestSecretsRedact(t *testing.T) {

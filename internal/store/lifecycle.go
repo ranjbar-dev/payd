@@ -93,6 +93,9 @@ func (s *Store) ExpireOrders(ctx context.Context, now time.Time, cooldown time.D
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit order expiry: %w", err)
 	}
+	if expired > 0 {
+		s.notifyOutbox()
+	}
 	return expired, nil
 }
 

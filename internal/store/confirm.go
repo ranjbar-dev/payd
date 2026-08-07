@@ -113,6 +113,7 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 	if err := tx.Commit(); err != nil {
 		return ConfirmationResult{}, fmt.Errorf("commit confirmation update: %w", err)
 	}
+	s.notifyOutbox()
 	return ConfirmationResult{
 		PaymentsConfirmed: len(promoted), PaymentsOrphaned: len(orphaned), OrdersConfirmed: confirmedOrders,
 	}, nil
