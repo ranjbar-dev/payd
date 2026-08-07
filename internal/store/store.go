@@ -4,29 +4,68 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"math/big"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+func init() {
+	err := sqlite.RegisterDeterministicScalarFunction("payd_decimal_sum_within", 3,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			var values []string
+			encoded, ok := args[0].(string)
+			if !ok {
+				return nil, errors.New("daily withdrawal values are not JSON text")
+			}
+			if err := json.Unmarshal([]byte(encoded), &values); err != nil {
+				return nil, err
+			}
+			total := new(big.Rat)
+			for _, text := range append(values, fmt.Sprint(args[1])) {
+				value, ok := new(big.Rat).SetString(text)
+				if !ok {
+					return nil, fmt.Errorf("invalid withdrawal USD value %q", text)
+				}
+				total.Add(total, value)
+			}
+			limit, ok := new(big.Rat).SetString(fmt.Sprint(args[2]))
+			if !ok {
+				return nil, fmt.Errorf("invalid withdrawal daily limit %q", args[2])
+			}
+			if total.Cmp(limit) <= 0 {
+				return int64(1), nil
+			}
+			return int64(0), nil
+		})
+	if err != nil {
+		panic(fmt.Sprintf("register exact withdrawal limit function: %v", err))
+	}
+}
+
 type Store struct {
 	normal      *sql.DB
 	full        *sql.DB // ARC-006a: reserved for irreversible-side-effect writes only.
 	outboxReady chan struct{}
+	referenceMu sync.RWMutex
+	reference   ReferenceBlock
 }
 
 type ChainParameters struct {

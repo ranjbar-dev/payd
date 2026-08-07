@@ -33,6 +33,7 @@ type Block struct {
 	Timestamp    int64
 	Transactions []json.RawMessage
 	Raw          json.RawMessage
+	Reference    store.ReferenceBlock
 }
 
 // PrepareBlock completes decoding and any receipt RPC before returning a DB-only closure (CHN-006/006a).
@@ -319,6 +320,7 @@ func (w *Worker) commit(ctx context.Context, block Block) error {
 	record := store.BlockRecord{
 		Height: block.Height, ID: block.ID, ParentID: block.ParentID, Timestamp: block.Timestamp,
 		TxCount: len(block.Transactions), ProcessedAt: w.now().UTC().Unix(),
+		Reference: block.Reference,
 	}
 	return w.store.CommitBlock(ctx, record, w.reorgDepth, apply)
 }
@@ -333,9 +335,12 @@ func parseBlock(raw json.RawMessage) (Block, error) {
 		ID     string `json:"blockID"`
 		Header struct {
 			Raw struct {
-				Number     int64  `json:"number"`
-				Timestamp  int64  `json:"timestamp"`
-				ParentHash string `json:"parentHash"`
+				Number         int64  `json:"number"`
+				Timestamp      int64  `json:"timestamp"`
+				ParentHash     string `json:"parentHash"`
+				TxTrieRoot     string `json:"txTrieRoot"`
+				WitnessAddress string `json:"witness_address"`
+				Version        int32  `json:"version"`
 			} `json:"raw_data"`
 		} `json:"block_header"`
 		Transactions []json.RawMessage `json:"transactions"`
@@ -350,6 +355,9 @@ func parseBlock(raw json.RawMessage) (Block, error) {
 		Height: response.Header.Raw.Number, ID: response.ID, ParentID: response.Header.Raw.ParentHash,
 		Timestamp: response.Header.Raw.Timestamp / 1000, Transactions: response.Transactions,
 		Raw: append(json.RawMessage(nil), raw...),
+		Reference: store.ReferenceBlock{Height: response.Header.Raw.Number, TimestampMS: response.Header.Raw.Timestamp,
+			ID: response.ID, TxTrieRoot: response.Header.Raw.TxTrieRoot, ParentHash: response.Header.Raw.ParentHash,
+			WitnessAddress: response.Header.Raw.WitnessAddress, Version: response.Header.Raw.Version},
 	}, nil
 }
 

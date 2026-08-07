@@ -31,6 +31,7 @@ import (
 	"payd/internal/seed"
 	"payd/internal/store"
 	walletpool "payd/internal/wallet"
+	"payd/internal/withdraw"
 )
 
 func main() {
@@ -136,12 +137,16 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	withdrawalWorker, err := withdraw.New(chainClient.Read, chainClient.Solidity, chainClient.Broadcast, db, wallet, cfg, logger)
+	if err != nil {
+		return err
+	}
 	ipnWorker, err := ipn.New(db, cfg.IPN, logger)
 	if err != nil {
 		return err
 	}
 	var workers sync.WaitGroup
-	workers.Add(8)
+	workers.Add(9)
 	go func() {
 		defer workers.Done()
 		priceWorker.Run(ctx)
@@ -169,6 +174,10 @@ func run(args []string) error {
 	go func() {
 		defer workers.Done()
 		balanceReconciler.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		withdrawalWorker.Run(ctx)
 	}()
 	go func() {
 		defer workers.Done()
@@ -217,6 +226,7 @@ func run(args []string) error {
 			confirmationWorker.UpdateEvents(events)
 			resourceMonitor.UpdateConfig(next)
 			balanceReconciler.UpdateConfig(next)
+			withdrawalWorker.UpdateConfig(next)
 			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
 			apiServer.UpdateConfig(next)

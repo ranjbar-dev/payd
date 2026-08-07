@@ -103,6 +103,43 @@ func TestTOTPReplayPersistsAndPreviousStepIsAccepted(t *testing.T) {
 	}
 }
 
+// TST-015 / WDR-001a: idempotent replay is resolved before the spent TOTP is validated.
+func TestWithdrawalIdempotentReplayReturnsOKBeforeTOTP(t *testing.T) {
+	server, database, cleanup := testServer(t, 3)
+	defer cleanup()
+	ctx := context.Background()
+	addresses, err := database.WalletAddresses(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, destination := addresses[0], addresses[1]
+	addressID := source.ID
+	if err := database.CommitBlock(ctx, store.BlockRecord{Height: 1, ID: "b1", ParentID: "b0", Timestamp: 1, ProcessedAt: 1}, 10,
+		func(write *store.BlockWrite) error {
+			_, err := write.UpsertPayment(store.PaymentRecord{TxID: "fund-withdrawal", LogIndex: 0, Direction: "in", BlockHeight: 1,
+				BlockID: "b1", BlockTimestamp: 1, FromAddress: destination.Address, ToAddress: source.Address,
+				AddressID: &addressID, Asset: "USDT", AmountRaw: "2000000", Status: "confirmed", DetectedAt: 1})
+			return err
+		}); err != nil {
+		t.Fatal(err)
+	}
+	code := totpCode(server.totpSecret, time.Now().UTC().Unix()/30)
+	body := fmt.Sprintf(`{"from_address":%q,"to_address":%q,"asset":"USDT","amount":"1","totp":%q}`, source.Address, destination.Address, code)
+	call := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/withdrawals", strings.NewReader(body))
+		req.Header.Set("X-API-Key", testAPIKey)
+		req.Header.Set("Idempotency-Key", "retry-one")
+		req.Header.Set("Content-Type", "application/json")
+		server.Handler().ServeHTTP(recorder, req)
+		return recorder
+	}
+	first, replay := call(), call()
+	if first.Code != http.StatusCreated || replay.Code != http.StatusOK {
+		t.Fatalf("first=%d %s replay=%d %s", first.Code, first.Body.String(), replay.Code, replay.Body.String())
+	}
+}
+
 func TestAuthPaginationAndPaymentRoutes(t *testing.T) {
 	server, database, cleanup := testServer(t, 3)
 	defer cleanup()
@@ -245,13 +282,14 @@ func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
 
 func testConfig(poolSize int) config.Config {
 	return config.Config{
-		Wallet: config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
-		Assets: []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
-		Orders: config.Orders{DefaultTTL: 30 * time.Minute},
-		IPN:    config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{{Name: "shop", Enabled: true}}},
-		Price:  config.Price{Pairs: []string{"TRXUSDT"}, StaleAfter: 5 * time.Minute},
+		Wallet:     config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
+		Assets:     []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
+		Orders:     config.Orders{DefaultTTL: 30 * time.Minute},
+		IPN:        config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{{Name: "shop", Enabled: true}}},
+		Price:      config.Price{Pairs: []string{"TRXUSDT"}, StaleAfter: 5 * time.Minute},
+		Withdrawal: config.Withdrawal{Enabled: true, DailyLimitUSD: "1000", FeeLimitTRX: 100, Expiration: time.Minute, RequireTOTP: true},
 		Auth: config.Auth{TOTPSecret: testTOTP, APIKeys: []config.APIKey{{
-			Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write"},
+			Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write", "withdrawals:read", "withdrawals:write"},
 		}}},
 	}
 }

@@ -173,6 +173,10 @@ func (c *ReadClient) GetTransactionByID(ctx context.Context, txid string) (json.
 	return c.post(ctx, "/wallet/gettransactionbyid", map[string]string{"value": txid})
 }
 
+func (c *SolidityClient) GetTransactionInfoByID(ctx context.Context, txid string) (json.RawMessage, error) {
+	return c.post(ctx, "/walletsolidity/gettransactioninfobyid", map[string]string{"value": txid})
+}
+
 func (c *ReadClient) GetAccountResource(ctx context.Context, address string) (json.RawMessage, error) {
 	return c.post(ctx, "/wallet/getaccountresource", map[string]any{"address": address, "visible": true})
 }

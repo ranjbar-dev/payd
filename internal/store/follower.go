@@ -21,6 +21,23 @@ type BlockRecord struct {
 	Timestamp   int64
 	TxCount     int
 	ProcessedAt int64
+	Reference   ReferenceBlock
+}
+
+type ReferenceBlock struct {
+	Height         int64
+	TimestampMS    int64
+	ID             string
+	TxTrieRoot     string
+	ParentHash     string
+	WitnessAddress string
+	Version        int32
+}
+
+func (s *Store) LatestReferenceBlock() (ReferenceBlock, bool) {
+	s.referenceMu.RLock()
+	defer s.referenceMu.RUnlock()
+	return s.reference, s.reference.ID != ""
 }
 
 type OwnedAddress struct {
@@ -183,6 +200,11 @@ func (s *Store) CommitBlock(ctx context.Context, block BlockRecord, reorgDepth i
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit block %d: %w", block.Height, err)
+	}
+	if block.Reference.ID != "" {
+		s.referenceMu.Lock()
+		s.reference = block.Reference
+		s.referenceMu.Unlock()
 	}
 	s.notifyOutbox()
 	return nil
