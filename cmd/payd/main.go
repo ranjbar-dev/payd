@@ -19,6 +19,7 @@ import (
 
 	"payd/internal/chain"
 	"payd/internal/config"
+	"payd/internal/decode"
 	"payd/internal/follower"
 	"payd/internal/seed"
 	"payd/internal/store"
@@ -84,7 +85,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	followerWorker, err := follower.New(chainClient.Read, db, nil, cfg.Tron.PollInterval, cfg.Tron.ReorgDepth, logger)
+	paymentDecoder, err := decode.New(chainClient.Read, db, cfg.Assets)
+	if err != nil {
+		return err
+	}
+	followerWorker, err := follower.New(chainClient.Read, db, paymentDecoder.Prepare, cfg.Tron.PollInterval, cfg.Tron.ReorgDepth, logger)
 	if err != nil {
 		return err
 	}
@@ -114,6 +119,9 @@ func run(args []string) error {
 			if err != nil {
 				logger.Error("config reload rejected", "error", err)
 				continue
+			}
+			if err := paymentDecoder.UpdateAssets(next.Assets); err != nil {
+				return fmt.Errorf("reload decoder assets: %w", err)
 			}
 			cfg = next
 		}

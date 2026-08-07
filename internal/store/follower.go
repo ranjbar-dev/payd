@@ -23,6 +23,11 @@ type BlockRecord struct {
 	ProcessedAt int64
 }
 
+type OwnedAddress struct {
+	ID      int64
+	Address string
+}
+
 // BlockApply is prepared before CommitBlock starts its transaction. It may only use BlockWrite DB methods (CHN-006/006a).
 type BlockApply func(*BlockWrite) error
 
@@ -74,6 +79,27 @@ func (s *Store) Block(ctx context.Context, height int64) (BlockRecord, bool, err
 		return BlockRecord{}, false, fmt.Errorf("load block %d: %w", height, err)
 	}
 	return block, true, nil
+}
+
+// OwnedAddresses returns every address derived by this service for bidirectional screening (DET-002b).
+func (s *Store) OwnedAddresses(ctx context.Context) ([]OwnedAddress, error) {
+	rows, err := s.normal.QueryContext(ctx, "SELECT id, address FROM addresses")
+	if err != nil {
+		return nil, fmt.Errorf("load owned addresses: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var addresses []OwnedAddress
+	for rows.Next() {
+		var address OwnedAddress
+		if err := rows.Scan(&address.ID, &address.Address); err != nil {
+			return nil, fmt.Errorf("scan owned address: %w", err)
+		}
+		addresses = append(addresses, address)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate owned addresses: %w", err)
+	}
+	return addresses, nil
 }
 
 // CommitBlock stores the block, prepared payment writes, and cursor in one transaction (CHN-006).
