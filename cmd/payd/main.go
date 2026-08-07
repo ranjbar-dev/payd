@@ -19,6 +19,7 @@ import (
 
 	"payd/internal/chain"
 	"payd/internal/config"
+	"payd/internal/confirm"
 	"payd/internal/decode"
 	"payd/internal/follower"
 	"payd/internal/lifecycle"
@@ -108,8 +109,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	confirmationWorker, err := confirm.New(chainClient.Solidity, db, cfg.Tron.ConfirmationsRequired, cfg.Wallet.Cooldown, logger, events)
+	if err != nil {
+		return err
+	}
 	var workers sync.WaitGroup
-	workers.Add(3)
+	workers.Add(4)
 	go func() {
 		defer workers.Done()
 		parameterWorker.Run(ctx)
@@ -121,6 +126,10 @@ func run(args []string) error {
 	go func() {
 		defer workers.Done()
 		lifecycleWorker.Run(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		confirmationWorker.Run(ctx)
 	}()
 	defer workers.Wait()
 
@@ -145,6 +154,7 @@ func run(args []string) error {
 			events = store.NewEventConfig(next.IPN, next.Assets)
 			orderMatcher.UpdateEvents(events)
 			lifecycleWorker.UpdateEvents(events)
+			confirmationWorker.UpdateEvents(events)
 			depositPool.UpdateConfig(next)
 			cfg = next
 		}

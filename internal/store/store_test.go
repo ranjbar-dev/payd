@@ -36,7 +36,7 @@ func TestOpenMigrateAndInitializeWallet(t *testing.T) {
 	assertPragma(t, s.full, "foreign_keys", "1")
 	assertPragma(t, s.full, "synchronous", "2")
 	var migrations, tables int
-	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 1 {
+	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 2 {
 		t.Fatalf("migrations count = %d, err = %v", migrations, err)
 	}
 	if err := s.normal.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil || tables != 17 {

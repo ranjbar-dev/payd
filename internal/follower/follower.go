@@ -38,19 +38,20 @@ type Block struct {
 type PrepareBlock func(context.Context, Block) (store.BlockApply, error)
 
 type Worker struct {
-	reader       ChainReader
-	store        *store.Store
-	prepare      PrepareBlock
-	logger       *slog.Logger
-	pollInterval time.Duration
-	reorgDepth   int
-	now          func() time.Time
-	sleep        func(context.Context, time.Duration) error
-	suspicion    *reorgSuspicion
-	staleReads   atomic.Uint64
-	suspected    atomic.Uint64
-	confirmed    atomic.Uint64
-	halted       atomic.Bool
+	reader           ChainReader
+	store            *store.Store
+	prepare          PrepareBlock
+	logger           *slog.Logger
+	pollInterval     time.Duration
+	reorgDepth       int
+	now              func() time.Time
+	sleep            func(context.Context, time.Duration) error
+	suspicion        *reorgSuspicion
+	suspicionDBKnown bool
+	staleReads       atomic.Uint64
+	suspected        atomic.Uint64
+	confirmed        atomic.Uint64
+	halted           atomic.Bool
 }
 
 type reorgSuspicion struct {
@@ -201,9 +202,16 @@ func (w *Worker) processCandidate(ctx context.Context, block Block) (bool, error
 		if err := w.recoverReorg(ctx, previous.Height, replacement); err != nil {
 			return false, err
 		}
+		if err := w.clearReorgSuspicion(ctx); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
-	w.suspicion = nil
+	if !w.suspicionDBKnown || w.suspicion != nil {
+		if err := w.clearReorgSuspicion(ctx); err != nil {
+			return false, err
+		}
+	}
 	return true, w.commit(ctx, block)
 }
 
@@ -221,20 +229,34 @@ func (w *Worker) confirmMismatch(ctx context.Context, storedPrevious store.Block
 	}
 	w.suspected.Add(1)
 	if replacement.ID == storedPrevious.ID {
-		w.suspicion = nil
+		if err := w.clearReorgSuspicion(ctx); err != nil {
+			return Block{}, false, err
+		}
 		return Block{}, false, nil
 	}
 	now := w.now()
 	if w.suspicion == nil || w.suspicion.height != replacement.Height || w.suspicion.replacementID != replacement.ID {
+		if err := w.store.SetReorgSuspicion(ctx, replacement.Height); err != nil {
+			return Block{}, false, err
+		}
 		w.suspicion = &reorgSuspicion{height: replacement.Height, replacementID: replacement.ID, firstSeen: now}
+		w.suspicionDBKnown = true
 		return Block{}, false, nil
 	}
 	if now.Sub(w.suspicion.firstSeen) < w.pollInterval {
 		return Block{}, false, nil
 	}
 	w.confirmed.Add(1)
-	w.suspicion = nil
 	return replacement, true, nil // CHN-011a: same replacement observed twice at least one poll apart.
+}
+
+func (w *Worker) clearReorgSuspicion(ctx context.Context) error {
+	if err := w.store.ClearReorgSuspicion(ctx); err != nil {
+		return err
+	}
+	w.suspicion = nil
+	w.suspicionDBKnown = true
+	return nil
 }
 
 func (w *Worker) recoverReorg(ctx context.Context, lastHeight int64, replacement Block) error {

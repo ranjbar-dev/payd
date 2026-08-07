@@ -89,6 +89,25 @@ func (s *Store) Block(ctx context.Context, height int64) (BlockRecord, bool, err
 	return block, true, nil
 }
 
+// SetReorgSuspicion blocks confirmation at and above the earliest unresolved divergence (CNF-002b).
+func (s *Store) SetReorgSuspicion(ctx context.Context, height int64) error {
+	_, err := s.normal.ExecContext(ctx, `UPDATE crawler_state SET reorg_suspected_from =
+        CASE WHEN reorg_suspected_from IS NULL THEN ? ELSE MIN(reorg_suspected_from, ?) END
+        WHERE id = 1`, height, height)
+	if err != nil {
+		return fmt.Errorf("store reorg suspicion at height %d: %w", height, err)
+	}
+	return nil
+}
+
+// ClearReorgSuspicion allows confirmation after the follower resolves or rejects the divergence (CNF-002b).
+func (s *Store) ClearReorgSuspicion(ctx context.Context) error {
+	if _, err := s.normal.ExecContext(ctx, "UPDATE crawler_state SET reorg_suspected_from = NULL WHERE id = 1"); err != nil {
+		return fmt.Errorf("clear reorg suspicion: %w", err)
+	}
+	return nil
+}
+
 // OwnedAddresses returns every address derived by this service for bidirectional screening (DET-002b).
 func (s *Store) OwnedAddresses(ctx context.Context) ([]OwnedAddress, error) {
 	rows, err := s.normal.QueryContext(ctx, "SELECT id, address FROM addresses")
