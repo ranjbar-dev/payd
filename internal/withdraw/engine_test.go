@@ -357,6 +357,34 @@ func TestBandwidthTopupBroadcastsOnce(t *testing.T) {
 	}
 }
 
+func TestResourceBroadcastCrashReconcilesWithoutRetry(t *testing.T) {
+	engine, database, signer, reader, broadcast, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	engine.mu.Lock()
+	engine.config.Resources.MinBandwidth = 345
+	engine.config.Resources.BandwidthStrategy = "topup"
+	engine.mu.Unlock()
+	reader.resources = json.RawMessage(`{"EnergyLimit":100000,"NetLimit":255}`)
+	broadcast.panicAfterSend = true
+	func() {
+		defer func() { _ = recover() }()
+		_ = engine.Tick(context.Background())
+	}()
+	withdrawal := onlyWithdrawal(t, database)
+	grant, found, err := database.ResourceGrantForWithdrawal(context.Background(), withdrawal.ID, "BANDWIDTH")
+	if err != nil || !found || grant.Status != "attempted" || grant.TxID == "" || grant.BroadcastAttemptedAt == nil {
+		t.Fatalf("crash marker = %#v found=%v err=%v", grant, found, err)
+	}
+	reader.transaction = json.RawMessage(`{"txID":"present"}`)
+	broadcast.panicAfterSend = false
+	if err := engine.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if broadcast.calls != 1 || signer.calls != 1 {
+		t.Fatalf("resource retry after crash: broadcasts=%d signs=%d", broadcast.calls, signer.calls)
+	}
+}
+
 func TestTRXWithdrawalAlsoSourcesBandwidth(t *testing.T) {
 	ctx := context.Background()
 	engine, database, _, reader, broadcast, cleanup := withdrawalFixture(t)

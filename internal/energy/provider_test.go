@@ -86,3 +86,12 @@ func TestTronZapProviderImplementsResourceTypeAndSignedCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestBurnCostSunUsesLiveFee(t *testing.T) {
+	if got := BurnCostSun(131000, 210).String(); got != "27510000" {
+		t.Fatalf("210 sun fee burn = %s", got)
+	}
+	if got := BurnCostSun(131000, 420).String(); got != "55020000" {
+		t.Fatalf("420 sun fee burn = %s", got)
+	}
+}

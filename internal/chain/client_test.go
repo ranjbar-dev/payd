@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -51,6 +52,34 @@ func TestBroadcastNeverRetriesOnNetworkError(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("broadcast attempts = %d, want exactly 1 (CHN-024a/WDR-014a)", got)
+	}
+}
+
+func TestDelegateResourceSendsDynamicResourceAndUnlockedPayload(t *testing.T) {
+	client := testClient(t)
+	client.Read.core.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/wallet/delegateresource" {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		var payload struct {
+			Owner    string `json:"owner_address"`
+			Receiver string `json:"receiver_address"`
+			Resource string `json:"resource"`
+			Balance  int64  `json:"balance"`
+			Lock     bool   `json:"lock"`
+			Visible  bool   `json:"visible"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Owner != "resource-wallet" || payload.Receiver != "deposit-wallet" || payload.Resource != "BANDWIDTH" ||
+			payload.Balance != 1_000_000 || payload.Lock || !payload.Visible {
+			t.Fatalf("delegation payload = %#v", payload)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"txID":"id","raw_data_hex":"00"}`)), Header: make(http.Header)}, nil
+	})
+	if _, err := client.Read.DelegateResource(context.Background(), "resource-wallet", "deposit-wallet", "BANDWIDTH", 1_000_000); err != nil {
+		t.Fatal(err)
 	}
 }
 
