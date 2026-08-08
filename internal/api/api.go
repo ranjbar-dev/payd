@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"payd/internal/config"
+	"payd/internal/energy"
 	"payd/internal/price"
 	"payd/internal/store"
 	walletpool "payd/internal/wallet"
@@ -45,12 +46,13 @@ type Server struct {
 	keys       []apiKey
 	totpSecret []byte
 
-	mu         sync.RWMutex
-	assets     map[string]config.Asset
-	price      config.Price
-	resources  config.Resources
-	withdrawal config.Withdrawal
-	cooldown   time.Duration
+	mu                 sync.RWMutex
+	assets             map[string]config.Asset
+	price              config.Price
+	resources          config.Resources
+	withdrawal         config.Withdrawal
+	cooldown           time.Duration
+	burnCeilingHealthy func() bool
 
 	rateMu sync.Mutex
 	rates  map[string]rateWindow
@@ -124,11 +126,31 @@ func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger
 	mux.Handle("GET /api/v1/withdrawals", server.requireScope("withdrawals:read", server.listWithdrawals))
 	mux.Handle("GET /api/v1/withdrawals/limits", server.requireScope("withdrawals:read", server.withdrawalLimits))
 	mux.Handle("GET /api/v1/withdrawals/{id}", server.requireScope("withdrawals:read", server.getWithdrawal))
-	server.handler = server.logRequests(server.normalizeErrors(server.authenticate(server.rateLimit(mux))))
+	root := http.NewServeMux()
+	root.HandleFunc("GET /readyz", server.ready)
+	root.Handle("/", server.authenticate(server.rateLimit(mux)))
+	server.handler = server.logRequests(server.normalizeErrors(root))
 	return server, nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
+
+func (s *Server) SetBurnCeilingHealthy(check func() bool) {
+	s.mu.Lock()
+	s.burnCeilingHealthy = check
+	s.mu.Unlock()
+}
+
+func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	s.mu.RLock()
+	check := s.burnCeilingHealthy
+	s.mu.RUnlock()
+	if check != nil && !check() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "reason": "energy_burn_ceiling"}) // ENR-017
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
 
 func (s *Server) UpdateConfig(cfg config.Config) {
 	s.mu.Lock()
@@ -686,6 +708,7 @@ func (s *Server) walletJSON(ctx context.Context, address store.WalletAddress) (m
 	}
 	canWithdraw := make(map[string]bool, len(assets))
 	for symbol, asset := range assets {
+		// RES-016 / API-013: energy alone never makes either asset kind withdrawable.
 		canWithdraw[symbol] = !drift && (bandwidthSufficient || bandwidthBurnSufficient) && (asset.Kind == "native" || energySufficient)
 	}
 	blocked := make([]string, 0, 2)
@@ -706,7 +729,7 @@ func (s *Server) walletJSON(ctx context.Context, address store.WalletAddress) (m
 		item["checked_at"] = *address.ResourcesCheckedAt
 	}
 	if paramsErr == nil {
-		burnSun := new(big.Int).Mul(big.NewInt(resources.MinEnergy), big.NewInt(params.EnergyFee))
+		burnSun := energy.BurnCostSun(resources.MinEnergy, params.EnergyFee)
 		burn, err := store.FormatUnits(burnSun.String(), 6)
 		if err != nil {
 			return nil, err

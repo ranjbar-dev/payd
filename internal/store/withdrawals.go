@@ -278,6 +278,24 @@ func (s *Store) NextRequestedWithdrawal(ctx context.Context) (Withdrawal, bool, 
 	return w, err == nil, err
 }
 
+func (s *Store) AwaitingResourceWithdrawals(ctx context.Context) ([]Withdrawal, error) {
+	rows, err := s.normal.QueryContext(ctx, withdrawalSelect+` WHERE w.status IN ('awaiting_resources','awaiting_energy')
+		AND w.txid IS NULL ORDER BY w.created_at,w.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []Withdrawal
+	for rows.Next() {
+		withdrawal, err := scanWithdrawal(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, withdrawal)
+	}
+	return result, rows.Err()
+}
+
 // WithdrawalRecoveryCandidates implements WDR-018/018a: txid wins over the status column.
 func (s *Store) WithdrawalRecoveryCandidates(ctx context.Context, now time.Time, energyTimeout time.Duration, force bool) ([]Withdrawal, error) {
 	rows, err := s.normal.QueryContext(ctx, withdrawalSelect+` WHERE
@@ -490,6 +508,36 @@ func (s *Store) FailWithdrawalAbsent(ctx context.Context, id, reason string, now
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `UPDATE withdrawals SET status='failed',status_updated_at=?,failure_reason=?,resolved_by='chain_absence'
 		WHERE id=? AND txid IS NOT NULL AND status NOT IN ('confirmed','failed')`, now.UTC().Unix(), reason, id)
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 1 {
+		if err := enqueueGlobalEvent(tx, events, "withdrawal:"+id, "withdrawal.failed", map[string]any{
+			"withdrawal_id": id, "status": "failed", "reason": reason,
+		}, now); err != nil {
+			return err
+		}
+		if err := s.auditWithdrawal(tx, id, "withdrawal.failed", reason, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyOutbox()
+	return nil
+}
+
+// FailWithdrawalResources applies RES-009 before any withdrawal transaction exists.
+func (s *Store) FailWithdrawalResources(ctx context.Context, id, reason string, now time.Time, events EventConfig) error {
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE withdrawals SET status='failed',status_updated_at=?,failure_reason=?,resolved_by='resource_acquisition'
+		WHERE id=? AND txid IS NULL AND status IN ('awaiting_resources','awaiting_energy')`, now.UTC().Unix(), reason, id)
 	if err != nil {
 		return err
 	}

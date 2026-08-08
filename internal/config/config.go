@@ -321,7 +321,7 @@ func (c Config) Validate() error {
 	}
 
 	if c.Energy.Enabled {
-		add(c.Energy.Provider != "", "energy.provider is required when enabled")
+		add(c.Energy.Provider == "tronzap", "energy.provider must name the registered tronzap provider when enabled (ENR-002)")
 		_, err = httpURL(c.Energy.APIURL)
 		add(err == nil, "energy.api_url: %v", err)
 		add(c.Energy.APIKey != "", "energy.api_key is required when enabled")

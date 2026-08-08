@@ -23,6 +23,7 @@ import (
 	"payd/internal/config"
 	"payd/internal/confirm"
 	"payd/internal/decode"
+	"payd/internal/energy"
 	"payd/internal/follower"
 	"payd/internal/ipn"
 	"payd/internal/lifecycle"
@@ -56,8 +57,13 @@ func run(args []string) error {
 	logger := newLogger(cfg.Log)
 	slog.SetDefault(logger)
 	logAssets(logger, cfg.Assets)
+	energyProvider, err := energy.New(cfg.Energy)
+	if err != nil {
+		return err
+	}
 	if !energyProviderReachable(logger, cfg.Energy) {
 		cfg.Energy.Enabled = false
+		energyProvider = nil
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -109,6 +115,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	apiServer.SetBurnCeilingHealthy(parameterWorker.BurnCeilingHealthy)
 	events := store.NewEventConfig(cfg.IPN, cfg.Assets)
 	orderMatcher := matcher.New(events)
 	paymentDecoder, err := decode.New(chainClient.Read, db, cfg.Assets, func(write *store.BlockWrite, payment store.PaymentRecord) error {
@@ -137,7 +144,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	withdrawalWorker, err := withdraw.New(chainClient.Read, chainClient.Solidity, chainClient.Broadcast, db, wallet, cfg, logger)
+	withdrawalWorker, err := withdraw.New(chainClient.Read, chainClient.Solidity, chainClient.Broadcast, db, wallet, energyProvider, cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -219,6 +226,15 @@ func run(args []string) error {
 			if err := paymentDecoder.UpdateAssets(next.Assets); err != nil {
 				return fmt.Errorf("reload decoder assets: %w", err)
 			}
+			nextEnergyProvider, err := energy.New(next.Energy)
+			if err != nil {
+				logger.Error("config reload rejected", "error", err)
+				continue
+			}
+			if err := parameterWorker.UpdateMaxBurnTRX(ctx, next.Energy.MaxBurnTRX); err != nil {
+				logger.Error("config reload rejected", "error", err)
+				continue
+			}
 			events = store.NewEventConfig(next.IPN, next.Assets)
 			orderMatcher.UpdateEvents(events)
 			followerWorker.UpdateEvents(events)
@@ -226,7 +242,7 @@ func run(args []string) error {
 			confirmationWorker.UpdateEvents(events)
 			resourceMonitor.UpdateConfig(next)
 			balanceReconciler.UpdateConfig(next)
-			withdrawalWorker.UpdateConfig(next)
+			withdrawalWorker.UpdateProvider(nextEnergyProvider, next)
 			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
 			apiServer.UpdateConfig(next)

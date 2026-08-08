@@ -181,6 +181,23 @@ func (c *ReadClient) GetAccountResource(ctx context.Context, address string) (js
 	return c.post(ctx, "/wallet/getaccountresource", map[string]any{"address": address, "visible": true})
 }
 
+// DelegateResource builds an unsigned Stake 2.0 transaction; only the separately signed
+// broadcast moves resources (RES-010).
+func (c *ReadClient) DelegateResource(ctx context.Context, owner, receiver, resource string, balance int64) (json.RawMessage, error) {
+	return c.post(ctx, "/wallet/delegateresource", map[string]any{
+		"owner_address": owner, "receiver_address": receiver, "balance": balance,
+		"resource": resource, "lock": false, "visible": true,
+	})
+}
+
+func (c *ReadClient) GetCanDelegatedMaxSize(ctx context.Context, owner, resource string) (json.RawMessage, error) {
+	typeCode := 0
+	if resource == "ENERGY" {
+		typeCode = 1
+	}
+	return c.post(ctx, "/wallet/getcandelegatedmaxsize", map[string]any{"owner_address": owner, "type": typeCode, "visible": true})
+}
+
 func (c *ReadClient) GetAccount(ctx context.Context, address string) (json.RawMessage, error) {
 	return c.post(ctx, "/wallet/getaccount", map[string]any{"address": address, "visible": true})
 }

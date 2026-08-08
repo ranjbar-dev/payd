@@ -2,14 +2,17 @@ package chain
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"payd/internal/energy"
 	"payd/internal/store"
 )
 
@@ -21,6 +24,7 @@ type ParameterWorker struct {
 	logger         *slog.Logger
 	maxBurnTRX     string
 	maxBurn        *big.Rat
+	maxBurnMu      sync.RWMutex
 	interval       time.Duration
 	errorCount     atomic.Uint64
 	ceilingHealthy atomic.Bool
@@ -97,17 +101,44 @@ func (w *ParameterWorker) ErrorCount() uint64 { return w.errorCount.Load() }
 // BurnCeilingHealthy is consumed by the readiness endpoint added in P14 (ENR-017).
 func (w *ParameterWorker) BurnCeilingHealthy() bool { return w.ceilingHealthy.Load() }
 
+func (w *ParameterWorker) UpdateMaxBurnTRX(ctx context.Context, value string) error {
+	var maximum *big.Rat
+	if value != "" {
+		var ok bool
+		maximum, ok = new(big.Rat).SetString(value)
+		if !ok || maximum.Sign() < 0 {
+			return errors.New("energy.max_burn_trx must be a non-negative decimal")
+		}
+	}
+	w.maxBurnMu.Lock()
+	w.maxBurnTRX, w.maxBurn = value, maximum
+	w.maxBurnMu.Unlock()
+	params, err := w.store.LoadChainParameters(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.ceilingHealthy.Store(maximum == nil)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	w.validateBurnCeiling(params.EnergyFee)
+	return nil
+}
+
 func (w *ParameterWorker) validateBurnCeiling(energyFee int64) {
-	if w.maxBurn == nil {
+	w.maxBurnMu.RLock()
+	maxBurn, maxBurnTRX := w.maxBurn, w.maxBurnTRX
+	w.maxBurnMu.RUnlock()
+	if maxBurn == nil {
 		w.ceilingHealthy.Store(true)
 		return
 	}
-	requiredSun := new(big.Int).Mul(big.NewInt(131000), big.NewInt(energyFee))
-	maxSun := new(big.Rat).Mul(w.maxBurn, big.NewRat(1_000_000, 1))
+	requiredSun := energy.BurnCostSun(131000, energyFee)
+	maxSun := new(big.Rat).Mul(maxBurn, big.NewRat(1_000_000, 1))
 	healthy := maxSun.Cmp(new(big.Rat).SetInt(requiredSun)) >= 0
 	w.ceilingHealthy.Store(healthy)
 	if !healthy {
-		w.logger.Warn("energy burn ceiling refuses a worst-case transfer", "max_burn_trx", w.maxBurnTRX, "required_burn_sun", requiredSun.String()) // ENR-017
+		w.logger.Warn("energy burn ceiling refuses a worst-case transfer", "max_burn_trx", maxBurnTRX, "required_burn_sun", requiredSun.String()) // ENR-017
 	}
 }
 

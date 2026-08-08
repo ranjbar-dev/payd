@@ -103,6 +103,24 @@ func TestTOTPReplayPersistsAndPreviousStepIsAccepted(t *testing.T) {
 	}
 }
 
+func TestReadyDegradesForUnsafeBurnCeilingWithoutAuthentication(t *testing.T) {
+	server, _, cleanup := testServer(t, 2)
+	defer cleanup()
+	server.SetBurnCeilingHealthy(func() bool { return false })
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "energy_burn_ceiling") {
+		t.Fatalf("degraded readyz = %d %s", response.Code, response.Body.String())
+	}
+	server.SetBurnCeilingHealthy(func() bool { return true })
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("healthy readyz = %d %s", response.Code, response.Body.String())
+	}
+}
+
 // TST-015 / WDR-001a: idempotent replay is resolved before the spent TOTP is validated.
 func TestWithdrawalIdempotentReplayReturnsOKBeforeTOTP(t *testing.T) {
 	server, database, cleanup := testServer(t, 3)
@@ -252,6 +270,39 @@ func TestBalanceDriftMapsToConflictAndCanBeCleared(t *testing.T) {
 	}
 	if balance, _, _, err := server.ValidateWithdrawalSource(ctx, address, "USDT"); err != nil || balance.ConfirmedRaw != "1000000" {
 		t.Fatalf("post-clear validation = %+v, %v", balance, err)
+	}
+}
+
+func TestWalletCanWithdrawRequiresBandwidth(t *testing.T) {
+	ctx := context.Background()
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	addresses, err := database.WalletAddresses(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateAddressResources(ctx, store.ResourceReading{AddressID: addresses[0].ID,
+		EnergyLimit: 100, BandwidthLimit: 255, NeedsResources: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(1)
+	cfg.Resources.MinEnergy, cfg.Resources.MinBandwidth = 1, 345
+	server.UpdateConfig(cfg)
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/wallets/needs-resources", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("wallet resources = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Addresses []struct {
+			Bandwidth struct {
+				Sufficient bool `json:"sufficient"`
+			} `json:"bandwidth"`
+			CanWithdraw map[string]bool `json:"can_withdraw"`
+		} `json:"addresses"`
+	}
+	decodeResponse(t, response, &body)
+	if len(body.Addresses) != 1 || body.Addresses[0].Bandwidth.Sufficient || body.Addresses[0].CanWithdraw["USDT"] {
+		t.Fatalf("RES-016 response = %#v", body.Addresses)
 	}
 }
 
