@@ -53,6 +53,8 @@ type Server struct {
 	withdrawal         config.Withdrawal
 	cooldown           time.Duration
 	burnCeilingHealthy func() bool
+	readyChecks        func(context.Context) []string
+	metrics            http.Handler
 
 	rateMu sync.Mutex
 	rates  map[string]rateWindow
@@ -128,6 +130,8 @@ func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger
 	mux.Handle("GET /api/v1/withdrawals/{id}", server.requireScope("withdrawals:read", server.getWithdrawal))
 	root := http.NewServeMux()
 	root.HandleFunc("GET /readyz", server.ready)
+	root.HandleFunc("GET /healthz", server.health)
+	root.HandleFunc("GET /metrics", server.serveMetrics)
 	root.Handle("/", server.authenticate(server.rateLimit(mux)))
 	server.handler = server.logRequests(server.normalizeErrors(root))
 	return server, nil
@@ -141,15 +145,44 @@ func (s *Server) SetBurnCeilingHealthy(check func() bool) {
 	s.mu.Unlock()
 }
 
-func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) SetOperations(ready func(context.Context) []string, metrics http.Handler) {
+	s.mu.Lock()
+	s.readyChecks, s.metrics = ready, metrics
+	s.mu.Unlock()
+}
+
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	check := s.burnCeilingHealthy
+	readyChecks := s.readyChecks
 	s.mu.RUnlock()
+	var reasons []string
 	if check != nil && !check() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "reason": "energy_burn_ceiling"}) // ENR-017
+		reasons = append(reasons, "energy_burn_ceiling") // ENR-017
+	}
+	if readyChecks != nil {
+		reasons = append(reasons, readyChecks(r.Context())...)
+	}
+	if len(reasons) > 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "reasons": reasons}) // OPS-001
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"}) // OPS-002
+}
+
+func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	handler := s.metrics
+	s.mu.RUnlock()
+	if handler == nil {
+		http.Error(w, "metrics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	handler.ServeHTTP(w, r)
 }
 
 func (s *Server) UpdateConfig(cfg config.Config) {

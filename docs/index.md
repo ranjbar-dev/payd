@@ -66,3 +66,4 @@ which file it lives in.
 
 - `AGENTS.md` at the project root — how Codex CLI should use this doc set and the target Go project layout.
 - `Roadmap.md` at the project root — phase-by-phase Codex CLI prompts and review checklists for building this project.
+- [`operations/backup-and-recovery.md`](operations/backup-and-recovery.md) — live SQLite backup, restore, total-loss replay, and withdrawal reconciliation runbook (OPS-010..014).

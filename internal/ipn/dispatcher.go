@@ -32,11 +32,20 @@ type runtimeConfig struct {
 }
 
 type Dispatcher struct {
-	store  *store.Store
-	logger *slog.Logger
-	now    func() time.Time
-	mu     sync.RWMutex
-	config runtimeConfig
+	store    *store.Store
+	logger   *slog.Logger
+	now      func() time.Time
+	mu       sync.RWMutex
+	config   runtimeConfig
+	attempts map[attemptKey]uint64
+}
+
+type attemptKey struct{ consumer, outcome string }
+
+type AttemptMetric struct {
+	Consumer string
+	Outcome  string
+	Count    uint64
 }
 
 func New(database *store.Store, cfg config.IPN, logger *slog.Logger) (*Dispatcher, error) {
@@ -46,7 +55,7 @@ func New(database *store.Store, cfg config.IPN, logger *slog.Logger) (*Dispatche
 	if logger == nil {
 		logger = slog.Default()
 	}
-	d := &Dispatcher{store: database, logger: logger, now: time.Now}
+	d := &Dispatcher{store: database, logger: logger, now: time.Now, attempts: make(map[attemptKey]uint64)}
 	d.UpdateConfig(cfg)
 	return d, nil
 }
@@ -122,19 +131,23 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 	}
 	secret, ok := cfg.consumers[event.Consumer]
 	if !ok {
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.store.FailIPN(ctx, event.ID, "consumer removed", nil, true, now)
 	}
 	currentStatus, err := d.store.IPNCurrentStatus(ctx, event)
 	if err != nil {
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.fail(ctx, cfg, event, now, fmt.Errorf("load current status: %w", err), nil)
 	}
 	body, err := deliveryBody(event, currentStatus, now)
 	if err != nil {
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.fail(ctx, cfg, event, now, err, nil)
 	}
 	timestamp := strconv.FormatInt(now.Unix(), 10)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, event.TargetURL, bytes.NewReader(body))
 	if err != nil {
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.fail(ctx, cfg, event, now, err, nil)
 	}
 	req.Header.Set("Content-Type", "application/json") // IPN-005
@@ -144,14 +157,33 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 	req.Header.Set("X-Signature", signature(secret, timestamp, body)) // IPN-006/007
 	response, err := cfg.client.Do(req)
 	if err != nil {
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.fail(ctx, cfg, event, now, err, nil)
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	_ = response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 { // IPN-008
+		d.recordAttempt(event.Consumer, "failure")
 		return true, d.fail(ctx, cfg, event, now, fmt.Errorf("HTTP status %d", response.StatusCode), &response.StatusCode)
 	}
+	d.recordAttempt(event.Consumer, "success")
 	return true, d.store.DeliverIPN(ctx, event.ID, response.StatusCode, d.now().UTC())
+}
+
+func (d *Dispatcher) recordAttempt(consumer, outcome string) {
+	d.mu.Lock()
+	d.attempts[attemptKey{consumer, outcome}]++
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) AttemptMetrics() []AttemptMetric {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	metrics := make([]AttemptMetric, 0, len(d.attempts))
+	for key, count := range d.attempts {
+		metrics = append(metrics, AttemptMetric{Consumer: key.consumer, Outcome: key.outcome, Count: count})
+	}
+	return metrics
 }
 
 func (d *Dispatcher) snapshotConfig() runtimeConfig {

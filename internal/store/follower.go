@@ -45,6 +45,12 @@ type OwnedAddress struct {
 	Address string
 }
 
+type ReconcileTarget struct {
+	ID              int64
+	Address         string
+	NewestPaymentAt int64
+}
+
 // BlockApply is prepared before CommitBlock starts its transaction. It may only use BlockWrite DB methods (CHN-006/006a).
 type BlockApply func(*BlockWrite) error
 
@@ -144,6 +150,63 @@ func (s *Store) OwnedAddresses(ctx context.Context) ([]OwnedAddress, error) {
 		return nil, fmt.Errorf("iterate owned addresses: %w", err)
 	}
 	return addresses, nil
+}
+
+// ReconcileTargets selects the exact DET-010/011 address states and anchors
+// each lookback to chain time from the newest ingested payment (DET-010b).
+func (s *Store) ReconcileTargets(ctx context.Context, includeCooling bool) ([]ReconcileTarget, error) {
+	states := "a.state='assigned'"
+	if includeCooling {
+		states = "a.state IN ('assigned','cooling')"
+	}
+	rows, err := s.normal.QueryContext(ctx, `SELECT a.id, a.address, COALESCE(MAX(p.block_timestamp),0)
+		FROM addresses a LEFT JOIN payments p ON p.address_id=a.id
+		WHERE `+states+` GROUP BY a.id, a.address ORDER BY a.id`)
+	if err != nil {
+		return nil, fmt.Errorf("load safety-net targets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var targets []ReconcileTarget
+	for rows.Next() {
+		var target ReconcileTarget
+		if err := rows.Scan(&target.ID, &target.Address, &target.NewestPaymentAt); err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+// ApplyReconciledPayments reuses the follower's BlockWrite/matcher path in one
+// transaction after every safety-net RPC has completed (DET-012, ARC-007).
+func (s *Store) ApplyReconciledPayments(ctx context.Context, payments []PaymentRecord, match func(*BlockWrite, PaymentRecord) error) (int, error) {
+	if len(payments) == 0 {
+		return 0, nil
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin reconciled payment ingest: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	write := &BlockWrite{tx: tx}
+	inserted := 0
+	for _, payment := range payments {
+		exists, err := write.PaymentExists(payment.TxID, payment.LogIndex)
+		if err != nil {
+			return 0, err
+		}
+		if err := match(write, payment); err != nil {
+			return 0, err
+		}
+		if !exists {
+			inserted++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit reconciled payment ingest: %w", err)
+	}
+	s.notifyOutbox()
+	return inserted, nil
 }
 
 // CommitBlock stores the block, prepared payment writes, and cursor in one transaction (CHN-006).

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/awnumar/memguard"
@@ -13,6 +15,29 @@ import (
 )
 
 const testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+// OPS-010: sqlite3 can take a consistent online backup while payd still owns
+// both WAL connections.
+func TestSQLiteCLIBackupWhileStoreIsOpen(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 CLI is not installed")
+	}
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "live.db")
+	database, err := Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close() }()
+	backupPath := filepath.Join(t.TempDir(), "backup.db")
+	if output, err := exec.CommandContext(ctx, "sqlite3", databasePath, ".backup "+filepath.ToSlash(backupPath)).CombinedOutput(); err != nil {
+		t.Fatalf("online .backup: %v: %s", err, output)
+	}
+	output, err := exec.CommandContext(ctx, "sqlite3", backupPath, "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;").CombinedOutput()
+	if err != nil || strings.Join(strings.Fields(string(output)), " ") != "ok 5" {
+		t.Fatalf("verify backup: %v: %q", err, output)
+	}
+}
 
 func TestOpenMigrateAndInitializeWallet(t *testing.T) {
 	ctx := context.Background()
@@ -36,7 +61,7 @@ func TestOpenMigrateAndInitializeWallet(t *testing.T) {
 	assertPragma(t, s.full, "foreign_keys", "1")
 	assertPragma(t, s.full, "synchronous", "2")
 	var migrations, tables int
-	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 4 {
+	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 5 {
 		t.Fatalf("migrations count = %d, err = %v", migrations, err)
 	}
 	if err := s.normal.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil || tables != 17 {

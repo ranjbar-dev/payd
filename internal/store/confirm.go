@@ -35,17 +35,12 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 	defer func() { _ = tx.Rollback() }()
 
 	// CNF-002a: lagging solidity backends cannot move this cursor backwards.
-	updated, err := tx.ExecContext(ctx, `UPDATE crawler_state
-        SET solidified_height = MAX(solidified_height, ?) WHERE id = 1`, height)
+	stamp := now.UTC().Unix()
+	_, err = tx.ExecContext(ctx, `UPDATE crawler_state
+		SET solidified_height = ?, solidified_updated_at = ?
+		WHERE id = 1 AND solidified_height < ?`, height, stamp, height)
 	if err != nil {
 		return ConfirmationResult{}, fmt.Errorf("store solidified height: %w", err)
-	}
-	rowsAffected, err := updated.RowsAffected()
-	if err != nil {
-		return ConfirmationResult{}, err
-	}
-	if rowsAffected == 0 {
-		return ConfirmationResult{}, tx.Commit()
 	}
 
 	var lastHeight, solidifiedHeight int64
@@ -64,7 +59,6 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 		return ConfirmationResult{}, err
 	}
 
-	stamp := now.UTC().Unix()
 	balances := make(map[balanceKey]struct{}, len(orphaned)+len(promoted))
 	orphanedOrders := make(map[string]struct{})
 	for _, payment := range orphaned {

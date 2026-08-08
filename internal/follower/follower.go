@@ -54,6 +54,10 @@ type Worker struct {
 	suspected        atomic.Uint64
 	confirmed        atomic.Uint64
 	halted           atomic.Bool
+	latestHeight     atomic.Int64
+	latestTimestamp  atomic.Int64
+	clockSkew        atomic.Int64
+	clockChecked     atomic.Bool
 	eventsMu         sync.RWMutex
 	events           store.EventConfig
 }
@@ -98,14 +102,19 @@ func (w *Worker) UpdateEvents(events store.EventConfig) {
 
 func (w *Worker) Run(ctx context.Context) {
 	w.tickAndReport(ctx)
+	w.checkClock()
 	ticker := time.NewTicker(w.pollInterval)
+	clockTicker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	defer clockTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			w.tickAndReport(ctx)
+		case <-clockTicker.C:
+			w.checkClock()
 		}
 		if w.halted.Load() {
 			<-ctx.Done()
@@ -137,6 +146,8 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("decode current block: %w", err)
 	}
+	w.latestHeight.Store(tip.Height)
+	w.latestTimestamp.Store(tip.Timestamp)
 	cursor, exists, err := w.store.Cursor(ctx)
 	if err != nil {
 		return err
@@ -329,6 +340,27 @@ func (w *Worker) StaleReads() uint64      { return w.staleReads.Load() }
 func (w *Worker) ReorgSuspicions() uint64 { return w.suspected.Load() }
 func (w *Worker) ReorgsConfirmed() uint64 { return w.confirmed.Load() }
 func (w *Worker) Halted() bool            { return w.halted.Load() }
+func (w *Worker) LatestHeight() int64     { return w.latestHeight.Load() }
+
+// ClockSkew returns the absolute local-versus-chain divergence after the first
+// successful head fetch (OPS-005).
+func (w *Worker) ClockSkew() (int64, bool) { return w.clockSkew.Load(), w.clockChecked.Load() }
+
+func (w *Worker) checkClock() {
+	stamp := w.latestTimestamp.Load()
+	if stamp == 0 {
+		return
+	}
+	skew := w.now().UTC().Unix() - stamp
+	if skew < 0 {
+		skew = -skew
+	}
+	w.clockSkew.Store(skew)
+	w.clockChecked.Store(true)
+	if skew > 30 {
+		w.logger.Error("local clock differs from latest block header", "clock_skew_seconds", skew) // OPS-005
+	}
+}
 
 func parseBlock(raw json.RawMessage) (Block, error) {
 	var response struct {

@@ -107,6 +107,28 @@ func TestGapCatchUpSameHeightAndRegression(t *testing.T) {
 	}
 }
 
+func TestClockSkewUsesLatestBlockHeader(t *testing.T) {
+	chain := &fakeChain{tip: rawBlock(t, 1, "A", "0", 0)}
+	worker, _ := newTestWorker(t, chain, 64)
+	block, err := parseBlock(chain.tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.now = func() time.Time { return time.Unix(block.Timestamp+40, 0) }
+	var logs bytes.Buffer
+	worker.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := worker.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	worker.checkClock()
+	if skew, checked := worker.ClockSkew(); !checked || skew != 40 {
+		t.Fatalf("clock skew = %d checked=%v", skew, checked)
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("level=ERROR")) {
+		t.Fatalf("40-second skew did not log an error: %s", logs.String())
+	}
+}
+
 func TestReplayThousandBlocks(t *testing.T) {
 	chain := &fakeChain{byHeight: make(map[int64]json.RawMessage, 999)}
 	chain.tip = rawBlock(t, 1, "block-1", "genesis", 0)

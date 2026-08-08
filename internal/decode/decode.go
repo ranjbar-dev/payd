@@ -151,6 +151,59 @@ func (d *Decoder) Prepare(ctx context.Context, block follower.Block) (store.Bloc
 	}, nil
 }
 
+// DecodeReconciled turns a history hit plus its authoritative transaction
+// receipt into the same PaymentRecord values used by the follower. Receipt
+// logs are scanned unconditionally so internal-contract TRC-20 transfers are
+// recovered by the safety net (DET-010/010a/012).
+func (d *Decoder) DecodeReconciled(ctx context.Context, txID string, transactionRaw, infoRaw json.RawMessage, block follower.Block) ([]store.PaymentRecord, error) {
+	d.mu.RLock()
+	assets := d.assets
+	d.mu.RUnlock()
+	addresses, err := d.owned(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owned := make(map[string]int64, len(addresses))
+	for _, address := range addresses {
+		key, _, err := tronAddress(address.Address)
+		if err != nil {
+			return nil, err
+		}
+		owned[key] = address.ID
+	}
+	detectedAt := d.now().UTC().Unix()
+	var payments []store.PaymentRecord
+	if len(transactionRaw) != 0 {
+		block.Transactions = []json.RawMessage{transactionRaw}
+		candidates, err := screen(block, owned, assets)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range candidates {
+			if item.native != nil {
+				item.native.DetectedAt = detectedAt
+				payments = append(payments, *item.native)
+			}
+		}
+	}
+	var info receipt
+	if err := json.Unmarshal(infoRaw, &info); err != nil {
+		return nil, fmt.Errorf("decode transaction %s info: %w", txID, err)
+	}
+	if info.ID == "" {
+		info.ID = txID
+	}
+	wrapped, err := json.Marshal([]receipt{info})
+	if err != nil {
+		return nil, err
+	}
+	tokenPayments, err := credit(block, []candidate{{txID: txID}}, wrapped, owned, assets, detectedAt)
+	if err != nil {
+		return nil, err
+	}
+	return append(payments, tokenPayments...), nil
+}
+
 // screen is Tier 1: it decides only whether a receipt is needed. TRC-20 calldata never becomes a payment (DET-001..004a).
 func screen(block follower.Block, owned map[string]int64, assets assetSet) ([]candidate, error) {
 	var candidates []candidate

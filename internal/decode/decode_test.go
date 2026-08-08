@@ -190,6 +190,52 @@ func TestRecordedBlockFixtures(t *testing.T) {
 	}
 }
 
+// DET-010a: safety-net inserts use the authoritative transaction receipt's
+// transaction-local log indexes, never an assumed zero.
+func TestDecodeReconciledUsesReceiptLogIndexes(t *testing.T) {
+	item := fixtureWithTag(t, loadFixtures(t), "multiple_transfer_logs")
+	block := fixtureBlock(t, item)
+	var infos []receipt
+	if err := json.Unmarshal(item.Receipts, &infos); err != nil {
+		t.Fatal(err)
+	}
+	contractKey, _, err := tronAddress(infos[0].Logs[0].Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey, first, err := tronAddress(infos[0].Logs[0].Topics[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, second, err := tronAddress(infos[0].Logs[1].Topics[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := &Decoder{
+		owned: func(context.Context) ([]store.OwnedAddress, error) {
+			return []store.OwnedAddress{{ID: 1, Address: first}, {ID: 2, Address: second}}, nil
+		},
+		assets: assetSet{byToken: map[string]string{contractKey: "USDT"}}, now: func() time.Time { return time.Unix(20, 0) },
+	}
+	payments, err := decoder.DecodeReconciled(context.Background(), infos[0].ID, nil, mustJSON(t, infos[0]), block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payments) != 2 || payments[0].LogIndex != 0 || payments[1].LogIndex != 1 ||
+		*payments[0].AddressID != 1 || *payments[1].AddressID != 2 {
+		t.Fatalf("reconciled payments = %#v (keys %s %s)", payments, firstKey, secondKey)
+	}
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 // DET-005a: a receipt error escapes Prepare, so follower.commit never opens CommitBlock and cannot advance the cursor.
 func TestReceiptFailureDoesNotCommitBlockOrCursor(t *testing.T) {
 	item := fixtureWithTag(t, loadFixtures(t), "trx_transfer")

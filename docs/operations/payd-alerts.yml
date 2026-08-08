@@ -1,0 +1,17 @@
+groups:
+  - name: payd
+    rules:
+      - alert: PaydWithdrawalNeedsOperator
+        expr: payd_withdrawals_needs_operator > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: A payd withdrawal has an unknown on-chain state
+      - alert: PaydTronGridQuotaProjectionWarning
+        expr: payd_trongrid_quota_projection_ratio >= 0.60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Projected TronGrid use exceeds 60% of the daily quota

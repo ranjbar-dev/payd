@@ -28,6 +28,7 @@ import (
 	"payd/internal/ipn"
 	"payd/internal/lifecycle"
 	"payd/internal/matcher"
+	"payd/internal/ops"
 	"payd/internal/price"
 	"payd/internal/seed"
 	"payd/internal/store"
@@ -144,6 +145,12 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := balanceReconciler.EnableSafetyNet(chainClient.Read, paymentDecoder,
+		func(write *store.BlockWrite, payment store.PaymentRecord) error {
+			return orderMatcher.Match(write, payment)
+		}); err != nil {
+		return err
+	}
 	withdrawalWorker, err := withdraw.New(chainClient.Read, chainClient.Solidity, chainClient.Broadcast, db, wallet, energyProvider, cfg, logger)
 	if err != nil {
 		return err
@@ -152,6 +159,8 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	operations := ops.New(db, chainClient, followerWorker, ipnWorker, cfg)
+	apiServer.SetOperations(operations.Ready, operations)
 	var workers sync.WaitGroup
 	workers.Add(9)
 	go func() {
@@ -246,6 +255,7 @@ func run(args []string) error {
 			ipnWorker.UpdateConfig(next.IPN)
 			depositPool.UpdateConfig(next)
 			apiServer.UpdateConfig(next)
+			operations.UpdateConfig(next)
 			cfg = next
 		}
 	}

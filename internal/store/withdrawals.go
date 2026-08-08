@@ -570,8 +570,17 @@ func (s *Store) ConfirmWithdrawal(ctx context.Context, id, feeRaw string, energy
 	if err != nil {
 		return err
 	}
+	energyCost := ""
+	if w.EnergySource == "burned" {
+		energyCost, err = FormatUnits(feeRaw, 6)
+		if err != nil {
+			return err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE withdrawals SET status='confirmed',status_updated_at=?,fee_raw=?,energy_used=?,confirmed_at=?,
-		lookup_failures=0,last_lookup_error=NULL WHERE id=? AND txid IS NOT NULL AND status<>'confirmed'`, now.UTC().Unix(), feeRaw, energyUsed, now.UTC().Unix(), id)
+		energy_cost_trx=COALESCE(NULLIF(?,''),energy_cost_trx),
+		lookup_failures=0,last_lookup_error=NULL WHERE id=? AND txid IS NOT NULL AND status<>'confirmed'`,
+		now.UTC().Unix(), feeRaw, energyUsed, now.UTC().Unix(), energyCost, id)
 	if err != nil {
 		return err
 	}

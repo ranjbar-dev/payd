@@ -34,6 +34,7 @@ type Client struct {
 	Solidity  *SolidityClient
 	Broadcast *BroadcastClient
 	counter   *dailyCounter
+	errors    *errorCounter
 }
 
 type ReadClient struct{ core *clientCore }
@@ -56,6 +57,7 @@ type clientCore struct {
 	http    *http.Client
 	pool    *endpointPool
 	counter *dailyCounter
+	errors  *errorCounter
 	sleep   func(context.Context, time.Duration) error
 }
 
@@ -124,11 +126,13 @@ func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
 		logger.Warn("solidity endpoint shares a TronGrid host; independent host preferred", "host", solidityURL.Hostname()) // CHN-026
 	}
 	counter := newDailyCounter(cfg.DailyRequestQuota, logger)
+	errorCounts := newErrorCounter()
 	httpClient := &http.Client{}
 	core := &clientCore{
 		http:    httpClient,
 		pool:    &endpointPool{endpoints: states, backoff: time.Second, now: time.Now},
 		counter: counter,
+		errors:  errorCounts,
 		sleep:   sleepContext,
 	}
 	solidityCore := &clientCore{
@@ -137,6 +141,7 @@ func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
 			base: strings.TrimRight(cfg.SolidityURL, "/"), apiKey: solidityKey,
 		}}, backoff: time.Second, now: time.Now},
 		counter: counter,
+		errors:  errorCounts,
 		sleep:   sleepContext,
 	}
 	return &Client{
@@ -144,11 +149,14 @@ func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
 		Solidity:  &SolidityClient{ReadClient: &ReadClient{core: solidityCore}},
 		Broadcast: &BroadcastClient{core: core},
 		counter:   counter,
+		errors:    errorCounts,
 	}, nil
 }
 
 // RequestsToday is the UTC-day request count used by the later metrics endpoint (CHN-023, DB-002a, RL-004).
 func (c *Client) RequestsToday() int64 { return c.counter.requestsToday() }
+
+func (c *Client) ErrorCounts() map[string]uint64 { return c.errors.snapshot() }
 
 // SoftCap is 70% of the configured quota, derived from RL-001 (CHN-023).
 func (c *Client) SoftCap() int64 { return c.counter.softCap }
@@ -171,6 +179,10 @@ func (c *ReadClient) GetTransactionInfoByBlockNum(ctx context.Context, number in
 
 func (c *ReadClient) GetTransactionByID(ctx context.Context, txid string) (json.RawMessage, error) {
 	return c.post(ctx, "/wallet/gettransactionbyid", map[string]string{"value": txid})
+}
+
+func (c *ReadClient) GetTransactionInfoByID(ctx context.Context, txid string) (json.RawMessage, error) {
+	return c.post(ctx, "/wallet/gettransactioninfobyid", map[string]string{"value": txid})
 }
 
 func (c *SolidityClient) GetTransactionInfoByID(ctx context.Context, txid string) (json.RawMessage, error) {
@@ -322,14 +334,42 @@ func (c *clientCore) sendOnce(ctx context.Context, endpoint endpointRef, method,
 	c.counter.increment()
 	response, err := c.http.Do(request)
 	if err != nil {
+		c.errors.add("network")
 		return Response{}, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
+		c.errors.add("read")
 		return Response{}, err
 	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		c.errors.add(fmt.Sprint(response.StatusCode))
+	}
 	return Response{StatusCode: response.StatusCode, Body: responseBody}, nil
+}
+
+type errorCounter struct {
+	mu     sync.Mutex
+	counts map[string]uint64
+}
+
+func newErrorCounter() *errorCounter { return &errorCounter{counts: make(map[string]uint64)} }
+
+func (c *errorCounter) add(code string) {
+	c.mu.Lock()
+	c.counts[code]++
+	c.mu.Unlock()
+}
+
+func (c *errorCounter) snapshot() map[string]uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make(map[string]uint64, len(c.counts))
+	for code, count := range c.counts {
+		result[code] = count
+	}
+	return result
 }
 
 func (p *endpointPool) choose() (endpointRef, error) {

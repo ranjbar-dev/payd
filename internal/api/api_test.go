@@ -121,6 +121,29 @@ func TestReadyDegradesForUnsafeBurnCeilingWithoutAuthentication(t *testing.T) {
 	}
 }
 
+func TestHealthMetricsAndOperationalReadinessNeedNoAuthentication(t *testing.T) {
+	server, _, cleanup := testServer(t, 2)
+	defer cleanup()
+	server.SetOperations(func(context.Context) []string { return []string{"clock_skew"} },
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("payd_clock_skew_seconds 40\n")) }))
+
+	for target, want := range map[string]struct {
+		code int
+		body string
+	}{
+		"/healthz": {http.StatusOK, `"status":"ok"`},
+		"/readyz":  {http.StatusServiceUnavailable, "clock_skew"},
+		"/metrics": {http.StatusOK, "payd_clock_skew_seconds 40"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != want.code || !strings.Contains(response.Body.String(), want.body) {
+			t.Fatalf("%s = %d %s", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 // TST-015 / WDR-001a: idempotent replay is resolved before the spent TOTP is validated.
 func TestWithdrawalIdempotentReplayReturnsOKBeforeTOTP(t *testing.T) {
 	server, database, cleanup := testServer(t, 3)
