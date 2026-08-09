@@ -1,18 +1,21 @@
 package chain
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"payd/internal/config"
+	"payd/internal/store"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -21,12 +24,17 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 
 func testClient(t *testing.T) *Client {
 	t.Helper()
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
 	client, err := New(config.Tron{
 		Endpoints:         []config.Endpoint{{URL: "https://node.example", APIKey: "secret", Weight: 1}},
 		SolidityURL:       "https://solidity.example",
 		RequestTimeout:    10 * time.Second,
 		DailyRequestQuota: 100_000,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +94,11 @@ func TestDelegateResourceSendsDynamicResourceAndUnlockedPayload(t *testing.T) {
 func TestThrottlingBacksOffAndFailsOver(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
+			database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = database.Close() })
 			client, err := New(config.Tron{
 				Endpoints: []config.Endpoint{
 					{URL: "https://one.example", APIKey: "one", Weight: 1},
@@ -94,7 +107,7 @@ func TestThrottlingBacksOffAndFailsOver(t *testing.T) {
 				SolidityURL:       "https://solidity.example",
 				RequestTimeout:    10 * time.Second,
 				DailyRequestQuota: 100_000,
-			}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			}, slog.New(slog.NewTextHandler(io.Discard, nil)), database)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +191,9 @@ func TestDailyCounterRollsAtUTCMidnight(t *testing.T) {
 	client := testClient(t)
 	now := time.Date(2026, 8, 7, 23, 59, 59, 0, time.UTC)
 	client.counter.now = func() time.Time { return now }
-	client.counter.increment()
+	if err := client.counter.increment(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if got := client.RequestsToday(); got != 1 {
 		t.Fatalf("first UTC day count = %d", got)
 	}
@@ -188,5 +203,53 @@ func TestDailyCounterRollsAtUTCMidnight(t *testing.T) {
 	}
 	if got := client.SoftCap(); got != 70_000 {
 		t.Fatalf("soft cap = %d, want 70000", got)
+	}
+}
+
+func TestQuotaProjectionUsesPersistedSevenDayTrend(t *testing.T) {
+	client := testClient(t)
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	client.counter.mu.Lock()
+	client.counter.now = func() time.Time { return now }
+	client.counter.rollUTC()
+	for i, count := range []int64{40_000, 45_000, 50_000, 55_000, 60_000, 65_000, 70_000} {
+		day := now.Truncate(24 * time.Hour).Add(time.Duration(i-7) * 24 * time.Hour).Unix()
+		client.counter.counts[day] = count
+	}
+	client.counter.mu.Unlock()
+	if got := client.QuotaProjectionRatio(); got != .75 {
+		t.Fatalf("quota projection ratio = %f, want 0.75 (RL-006)", got)
+	}
+	var logs bytes.Buffer
+	client.counter.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := client.counter.increment(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "seven-day quota projection crossed 60%") {
+		t.Fatalf("RL-006 warning missing: %s", logs.String())
+	}
+}
+
+func TestDailyCounterSurvivesClientRestart(t *testing.T) {
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close() }()
+	cfg := config.Tron{Endpoints: []config.Endpoint{{URL: "https://node.example", Weight: 1}},
+		SolidityURL: "https://solidity.example", RequestTimeout: 10 * time.Second, DailyRequestQuota: 100_000}
+	client, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.counter.increment(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.RequestsToday(); got != 1 {
+		t.Fatalf("persisted daily requests = %d, want 1 (RL-006)", got)
 	}
 }

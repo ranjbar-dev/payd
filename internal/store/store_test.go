@@ -16,8 +16,8 @@ import (
 
 const testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
-// OPS-010: sqlite3 can take a consistent online backup while payd still owns
-// both WAL connections.
+// OPS-010: sqlite3 can take a consistent online backup while payd holds an
+// active WAL write transaction.
 func TestSQLiteCLIBackupWhileStoreIsOpen(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("sqlite3 CLI is not installed")
@@ -29,12 +29,20 @@ func TestSQLiteCLIBackupWhileStoreIsOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = database.Close() }()
+	write, err := database.normal.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = write.Rollback() }()
+	if _, err := write.ExecContext(ctx, "UPDATE crawler_state SET updated_at=updated_at+1 WHERE id=1"); err != nil {
+		t.Fatal(err)
+	}
 	backupPath := filepath.Join(t.TempDir(), "backup.db")
 	if output, err := exec.CommandContext(ctx, "sqlite3", databasePath, ".backup "+filepath.ToSlash(backupPath)).CombinedOutput(); err != nil {
 		t.Fatalf("online .backup: %v: %s", err, output)
 	}
 	output, err := exec.CommandContext(ctx, "sqlite3", backupPath, "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;").CombinedOutput()
-	if err != nil || strings.Join(strings.Fields(string(output)), " ") != "ok 5" {
+	if err != nil || strings.Join(strings.Fields(string(output)), " ") != "ok 7" {
 		t.Fatalf("verify backup: %v: %q", err, output)
 	}
 }
@@ -61,10 +69,10 @@ func TestOpenMigrateAndInitializeWallet(t *testing.T) {
 	assertPragma(t, s.full, "foreign_keys", "1")
 	assertPragma(t, s.full, "synchronous", "2")
 	var migrations, tables int
-	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 5 {
+	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 7 {
 		t.Fatalf("migrations count = %d, err = %v", migrations, err)
 	}
-	if err := s.normal.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil || tables != 17 {
+	if err := s.normal.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil || tables != 18 {
 		t.Fatalf("table count = %d, err = %v", tables, err)
 	}
 	if runtime.GOOS != "windows" {

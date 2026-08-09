@@ -144,6 +144,16 @@ func TestHealthMetricsAndOperationalReadinessNeedNoAuthentication(t *testing.T) 
 	}
 }
 
+func TestWithdrawalCostsIncludeRentalAndResourceFees(t *testing.T) {
+	network, resource, bandwidth, total := withdrawalCosts(store.Withdrawal{
+		FeeRaw: "100000", EnergySource: "rented", EnergyCostTRX: "3",
+		EnergyGrantFeeRaw: "10000", BandwidthGrantFeeRaw: "20000",
+	})
+	if network != "0.1" || resource != "0.03" || bandwidth != "0.02" || total != "3.13" {
+		t.Fatalf("WDR-025 costs = network=%s resource=%s bandwidth=%s total=%s", network, resource, bandwidth, total)
+	}
+}
+
 // TST-015 / WDR-001a: idempotent replay is resolved before the spent TOTP is validated.
 func TestWithdrawalIdempotentReplayReturnsOKBeforeTOTP(t *testing.T) {
 	server, database, cleanup := testServer(t, 3)

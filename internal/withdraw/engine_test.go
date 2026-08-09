@@ -23,10 +23,10 @@ import (
 const testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
 type fakeReader struct {
-	transaction, resources, delegation, delegatable json.RawMessage
-	delegationCalls, resourceCalls                  int
-	delegatedResource                               string
-	delegatedBalance                                int64
+	transaction, account, resources, delegation, delegatable json.RawMessage
+	delegationCalls, resourceCalls                           int
+	delegatedResource                                        string
+	delegatedBalance                                         int64
 }
 
 func (f *fakeReader) GetNowBlock(context.Context) (json.RawMessage, error) {
@@ -34,6 +34,12 @@ func (f *fakeReader) GetNowBlock(context.Context) (json.RawMessage, error) {
 }
 func (f *fakeReader) GetTransactionByID(context.Context, string) (json.RawMessage, error) {
 	return f.transaction, nil
+}
+func (f *fakeReader) GetAccount(context.Context, string) (json.RawMessage, error) {
+	if f.account != nil {
+		return f.account, nil
+	}
+	return json.RawMessage(`{"balance":0}`), nil
 }
 func (f *fakeReader) GetAccountResource(context.Context, string) (json.RawMessage, error) {
 	f.resourceCalls++
@@ -157,6 +163,51 @@ func TestEnergyPurchaseTimeoutEmitsFailureAndFallsThrough(t *testing.T) {
 	}
 	if count, err := database.OutboxCount(ctx, "energy.purchase_failed"); err != nil || count != 1 {
 		t.Fatalf("purchase_failed events=%d err=%v", count, err)
+	}
+}
+
+func TestStartupExpiresStaleEnergyPurchaseAndRecordsCost(t *testing.T) {
+	ctx := context.Background()
+	engine, database, _, reader, _, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	now := time.Now().UTC().Truncate(time.Second)
+	engine.now = func() time.Time { return now }
+	provider := &fakeEnergyProvider{quote: energy.Quote{PriceTRX: "3"}, order: energy.Order{ID: "pending", State: "pending"}, balance: "100"}
+	cfg := engine.config
+	cfg.Energy = config.Energy{Enabled: true, Provider: "tronzap", RentAmount: 100, RentDuration: time.Hour,
+		MaxPriceTRX: "6", BalanceWarnTRX: "50", PollInterval: time.Second, PollTimeout: 2 * time.Second, FallbackToBurn: true}
+	cfg.Resources.MinEnergy = 100
+	engine.UpdateProvider(provider, cfg)
+	reader.resources = json.RawMessage(`{"EnergyLimit":0,"NetLimit":1000,"TotalEnergyLimit":1000000,"TotalEnergyWeight":1000000}`)
+	reader.delegatable = json.RawMessage(`{"max_size":0}`)
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	engine.UpdateProvider(nil, cfg)
+	if err := engine.recover(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := onlyWithdrawal(t, database)
+	purchase, found, err := database.EnergyPurchaseForWithdrawal(ctx, withdrawal.ID)
+	if err != nil || !found || purchase.Status != "expired" || withdrawal.EnergyCostTRX != "3" || withdrawal.Status != "awaiting_resources" {
+		t.Fatalf("WDR-019 recovery withdrawal=%#v purchase=%#v found=%v err=%v", withdrawal, purchase, found, err)
+	}
+}
+
+func TestMissingChainParametersHoldWithdrawal(t *testing.T) {
+	engine, database, _, reader, _, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	engine.config.Resources.MinEnergy = 100
+	engine.config.Energy.FallbackToBurn = true
+	reader.resources = json.RawMessage(`{"EnergyLimit":0,"NetLimit":1000,"TotalEnergyLimit":1000000,"TotalEnergyWeight":1000000}`)
+	reader.delegatable = json.RawMessage(`{"max_size":0}`)
+	if err := engine.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := onlyWithdrawal(t, database)
+	if withdrawal.Status != "awaiting_resources" || withdrawal.TxID != "" {
+		t.Fatalf("RES-022 withdrawal = %#v", withdrawal)
 	}
 }
 
@@ -354,6 +405,45 @@ func TestBandwidthTopupBroadcastsOnce(t *testing.T) {
 	}
 	if broadcast.calls != 1 || signer.calls != 1 {
 		t.Fatalf("RES-008 retry: broadcasts=%d signs=%d", broadcast.calls, signer.calls)
+	}
+}
+
+func TestSolidBandwidthTopupUnlocksWithdrawalAndLedgersFee(t *testing.T) {
+	ctx := context.Background()
+	engine, database, _, reader, broadcast, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	engine.mu.Lock()
+	engine.config.Resources.MinBandwidth = 345
+	engine.config.Resources.BandwidthStrategy = "topup"
+	engine.mu.Unlock()
+	if _, err := database.UpsertChainParameters(ctx, 100, 100, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reader.resources = json.RawMessage(`{"EnergyLimit":100000,"NetLimit":255}`)
+	reader.account = json.RawMessage(`{"balance":2000000}`)
+	broadcast.response = chain.Response{StatusCode: http.StatusOK, Body: json.RawMessage(`{"result":true}`)}
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reader.transaction = json.RawMessage(`{"txID":"present"}`)
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := onlyWithdrawal(t, database)
+	grant, found, err := database.ResourceGrantForWithdrawal(ctx, withdrawal.ID, "BANDWIDTH")
+	if err != nil || !found || grant.FeeRaw != "10" {
+		t.Fatalf("WDR-023a grant=%#v found=%v err=%v", grant, found, err)
+	}
+	balance, err := database.BalanceForWithdrawal(ctx, withdrawal.FromAddress, "TRX")
+	if err != nil || balance.ConfirmedRaw != "2000000" {
+		t.Fatalf("owned top-up balance=%#v err=%v", balance, err)
+	}
+	if err := engine.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal = onlyWithdrawal(t, database)
+	if withdrawal.Status != "broadcast" || withdrawal.BandwidthSource != "topup" || broadcast.calls != 2 {
+		t.Fatalf("RES-006 topup withdrawal=%#v broadcasts=%d", withdrawal, broadcast.calls)
 	}
 }
 

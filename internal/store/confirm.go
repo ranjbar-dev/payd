@@ -16,11 +16,10 @@ type ConfirmationResult struct {
 }
 
 type confirmationPayment struct {
-	id        int64
-	orderID   sql.NullString
-	addressID sql.NullInt64
-	asset     string
-	status    string
+	id                                  int64
+	orderID                             sql.NullString
+	addressID                           sql.NullInt64
+	asset, status, direction, toAddress string
 }
 
 // ApplySolidifiedHeight atomically stores the solidity head and applies CNF-002/003 promotions.
@@ -65,7 +64,9 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 		if _, err := tx.ExecContext(ctx, "UPDATE payments SET status = 'orphaned', confirmed_at = NULL WHERE id = ?", payment.id); err != nil {
 			return ConfirmationResult{}, fmt.Errorf("orphan mismatched payment: %w", err)
 		}
-		collectConfirmationEffects(payment, balances, orphanedOrders)
+		if err := collectConfirmationEffects(tx, payment, balances, orphanedOrders); err != nil {
+			return ConfirmationResult{}, err
+		}
 	}
 	for _, payment := range promoted {
 		status := payment.status
@@ -75,7 +76,9 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 		if _, err := tx.ExecContext(ctx, "UPDATE payments SET status = ?, confirmed_at = ? WHERE id = ?", status, stamp, payment.id); err != nil {
 			return ConfirmationResult{}, fmt.Errorf("confirm payment: %w", err)
 		}
-		collectConfirmationEffects(payment, balances, nil)
+		if err := collectConfirmationEffects(tx, payment, balances, nil); err != nil {
+			return ConfirmationResult{}, err
+		}
 	}
 	for key := range balances {
 		if err := recalculateBalance(tx, key.addressID, key.asset); err != nil {
@@ -114,7 +117,7 @@ func (s *Store) ApplySolidifiedHeight(ctx context.Context, height int64, confirm
 }
 
 func mismatchedPayments(tx *sql.Tx, solidifiedHeight int64) ([]confirmationPayment, error) {
-	rows, err := tx.Query(`SELECT p.id, p.order_id, p.address_id, p.asset, p.status
+	rows, err := tx.Query(`SELECT p.id,p.order_id,p.address_id,p.asset,p.status,p.direction,p.to_address
         FROM payments p JOIN blocks b ON b.height = p.block_height
         WHERE (p.status = 'seen' OR (p.status = 'unattributed' AND p.confirmed_at IS NULL))
           AND p.block_height <= ? AND p.block_id <> b.block_id`, solidifiedHeight)
@@ -135,7 +138,7 @@ func promotablePayments(tx *sql.Tx, lastHeight, solidifiedHeight int64, confirma
           SELECT b.height, b.block_id, b.parent_id FROM blocks b
           JOIN canonical child ON b.height = child.height - 1 AND child.parent_id = b.block_id
         )
-        SELECT p.id, p.order_id, p.address_id, p.asset, p.status
+		SELECT p.id,p.order_id,p.address_id,p.asset,p.status,p.direction,p.to_address
         FROM payments p JOIN canonical b ON b.height = p.block_height
         WHERE (p.status = 'seen' OR (p.status = 'unattributed' AND p.confirmed_at IS NULL))
           AND p.block_height <= ?                         -- CNF-002(a): solidified height
@@ -155,7 +158,8 @@ func scanConfirmationPayments(rows *sql.Rows) ([]confirmationPayment, error) {
 	var payments []confirmationPayment
 	for rows.Next() {
 		var payment confirmationPayment
-		if err := rows.Scan(&payment.id, &payment.orderID, &payment.addressID, &payment.asset, &payment.status); err != nil {
+		if err := rows.Scan(&payment.id, &payment.orderID, &payment.addressID, &payment.asset, &payment.status,
+			&payment.direction, &payment.toAddress); err != nil {
 			return nil, err
 		}
 		payments = append(payments, payment)
@@ -168,13 +172,22 @@ type balanceKey struct {
 	asset     string
 }
 
-func collectConfirmationEffects(payment confirmationPayment, balances map[balanceKey]struct{}, orders map[string]struct{}) {
+func collectConfirmationEffects(tx *sql.Tx, payment confirmationPayment, balances map[balanceKey]struct{}, orders map[string]struct{}) error {
 	if payment.addressID.Valid {
 		balances[balanceKey{addressID: payment.addressID.Int64, asset: payment.asset}] = struct{}{}
+	}
+	if payment.direction == "out" {
+		var recipientID int64
+		if err := tx.QueryRow("SELECT id FROM addresses WHERE address=?", payment.toAddress).Scan(&recipientID); err == nil {
+			balances[balanceKey{addressID: recipientID, asset: payment.asset}] = struct{}{}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 	}
 	if orders != nil && payment.orderID.Valid {
 		orders[payment.orderID.String] = struct{}{}
 	}
+	return nil
 }
 
 func promotePaidOrders(tx *sql.Tx, lastHeight int64, cooldown time.Duration, events EventConfig, now time.Time) (int, error) {

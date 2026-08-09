@@ -316,6 +316,16 @@ func (w *BlockWrite) UpsertPayment(payment PaymentRecord) (bool, error) {
 			return false, err
 		}
 	}
+	if payment.Direction == "out" {
+		var recipientID int64
+		if err := w.tx.QueryRow("SELECT id FROM addresses WHERE address=?", payment.ToAddress).Scan(&recipientID); err == nil {
+			if err := recalculateBalance(w.tx, recipientID, payment.Asset); err != nil { // WDR-023a: owned-to-owned top-up credit.
+				return false, err
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
 	return oldStatus == "orphaned", nil
 }
 
@@ -379,7 +389,9 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64, eventConf
 		return RewindResult{}, err
 	}
 	balanceRows, err := tx.Query(`SELECT DISTINCT address_id, asset FROM payments
-        WHERE block_height > ? AND address_id IS NOT NULL`, ancestorHeight)
+		WHERE block_height > ? AND address_id IS NOT NULL
+		UNION SELECT DISTINCT a.id,p.asset FROM payments p JOIN addresses a ON a.address=p.to_address
+		WHERE p.block_height > ? AND p.direction='out'`, ancestorHeight, ancestorHeight)
 	if err != nil {
 		return RewindResult{}, fmt.Errorf("find reorg-affected balances: %w", err)
 	}
@@ -445,8 +457,9 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64, eventConf
 }
 
 func recalculateBalance(tx *sql.Tx, addressID int64, asset string) error {
-	rows, err := tx.Query(`SELECT amount_raw, direction, status, confirmed_at FROM payments
-        WHERE address_id = ? AND asset = ? AND status <> 'orphaned'`, addressID, asset)
+	rows, err := tx.Query(`SELECT amount_raw,CASE WHEN address_id=? THEN direction ELSE 'in' END,status,confirmed_at
+		FROM payments WHERE asset=? AND status<>'orphaned' AND (address_id=? OR
+		(direction='out' AND to_address=(SELECT address FROM addresses WHERE id=?)))`, addressID, asset, addressID, addressID)
 	if err != nil {
 		return fmt.Errorf("load balance payments: %w", err)
 	}

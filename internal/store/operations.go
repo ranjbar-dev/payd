@@ -5,7 +5,43 @@ import (
 	"database/sql"
 	"fmt"
 	"math/big"
+	"time"
 )
+
+type TronGridDailyRequests struct {
+	DayStart int64
+	Requests int64
+}
+
+// RecordTronGridRequest persists every attempted request against its UTC day
+// so restarts cannot erase RL-006's historical trend.
+func (s *Store) RecordTronGridRequest(ctx context.Context, at time.Time) (int64, error) {
+	day := at.UTC().Truncate(24 * time.Hour).Unix()
+	var requests int64
+	err := s.normal.QueryRowContext(ctx, `INSERT INTO trongrid_daily_requests(day_start,requests,updated_at)
+		VALUES (?,1,?) ON CONFLICT(day_start) DO UPDATE SET requests=requests+1,updated_at=excluded.updated_at
+		RETURNING requests`, day, at.UTC().Unix()).Scan(&requests)
+	return requests, err
+}
+
+func (s *Store) TronGridRequestHistory(ctx context.Context, now time.Time) ([]TronGridDailyRequests, error) {
+	today := now.UTC().Truncate(24 * time.Hour)
+	rows, err := s.normal.QueryContext(ctx, `SELECT day_start,requests FROM trongrid_daily_requests
+		WHERE day_start>=? AND day_start<=? ORDER BY day_start`, today.Add(-7*24*time.Hour).Unix(), today.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var history []TronGridDailyRequests
+	for rows.Next() {
+		var day TronGridDailyRequests
+		if err := rows.Scan(&day.DayStart, &day.Requests); err != nil {
+			return nil, err
+		}
+		history = append(history, day)
+	}
+	return history, rows.Err()
+}
 
 type OperationalStatus struct {
 	LastHeight           int64

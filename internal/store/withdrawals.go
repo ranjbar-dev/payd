@@ -22,6 +22,7 @@ type Withdrawal struct {
 	ID, IdempotencyKey, FromAddress, ToAddress, Asset, AmountRaw         string
 	AmountUSD, Status, TxID, BroadcastResponse                           string
 	FeeRaw, EnergySource, EnergyCostTRX, BandwidthSource                 string
+	EnergyGrantFeeRaw, BandwidthGrantFeeRaw                              string
 	FailureReason, ResolvedBy, RequestedBy, RequestedIP, LastLookupError string
 	AddressID, CreatedAt                                                 int64
 	HDIndex                                                              uint32
@@ -42,7 +43,9 @@ const withdrawalSelect = `SELECT w.id, w.idempotency_key, w.address_id, a.hd_ind
     COALESCE(w.energy_used,0), COALESCE(w.energy_source,''), COALESCE(w.energy_cost_trx,''),
     COALESCE(w.bandwidth_source,''), COALESCE(w.failure_reason,''), COALESCE(w.resolved_by,''),
     w.requested_by, w.created_at, w.broadcast_at, w.confirmed_at, w.expiration_at,
-    w.last_lookup_at, w.lookup_failures, COALESCE(w.last_lookup_error,''), COALESCE(w.requested_ip,'')
+	w.last_lookup_at, w.lookup_failures, COALESCE(w.last_lookup_error,''), COALESCE(w.requested_ip,''),
+	COALESCE((SELECT fee_raw FROM resource_grants WHERE withdrawal_id=w.id AND resource_type='ENERGY'),''),
+	COALESCE((SELECT fee_raw FROM resource_grants WHERE withdrawal_id=w.id AND resource_type='BANDWIDTH'),'')
     FROM withdrawals w JOIN addresses a ON a.id = w.address_id`
 
 func scanWithdrawal(row rowScanner) (Withdrawal, error) {
@@ -52,7 +55,8 @@ func scanWithdrawal(row rowScanner) (Withdrawal, error) {
 		&w.Asset, &w.AmountRaw, &w.AmountUSD, &w.Status, &w.TxID, &attempted, &w.BroadcastResponse,
 		&w.FeeRaw, &w.EnergyUsed, &w.EnergySource, &w.EnergyCostTRX, &w.BandwidthSource,
 		&w.FailureReason, &w.ResolvedBy, &w.RequestedBy, &w.CreatedAt, &broadcastAt, &confirmedAt,
-		&expirationAt, &lookupAt, &w.LookupFailures, &w.LastLookupError, &w.RequestedIP)
+		&expirationAt, &lookupAt, &w.LookupFailures, &w.LastLookupError, &w.RequestedIP,
+		&w.EnergyGrantFeeRaw, &w.BandwidthGrantFeeRaw)
 	setNullable := func(value sql.NullInt64, target **int64) {
 		if value.Valid {
 			v := value.Int64

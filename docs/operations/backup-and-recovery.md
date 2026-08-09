@@ -18,8 +18,8 @@ sqlite3 /var/backups/payd/payd-YYYYMMDDTHHMMSSZ.db "PRAGMA integrity_check;"
 
 The integrity command must print `ok`. Periodically restore a backup on an
 isolated host and start the same `payd` version against it; an unread backup is
-not a backup. The automated store test also runs `sqlite3 .backup` while both
-service database connections remain open.
+not a backup. The automated store test also runs `sqlite3 .backup` while a live
+write transaction is open, not merely while idle connections exist.
 
 ## Restore a usable database backup (OPS-011)
 

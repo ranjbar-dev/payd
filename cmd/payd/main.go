@@ -104,7 +104,7 @@ func run(args []string) error {
 		Addr: cfg.Server.Listen, Handler: apiServer.Handler(),
 		ReadTimeout: cfg.Server.ReadTimeout, WriteTimeout: cfg.Server.WriteTimeout,
 	}
-	chainClient, err := chain.New(cfg.Tron, logger)
+	chainClient, err := chain.New(cfg.Tron, logger, db)
 	if err != nil {
 		return err
 	}

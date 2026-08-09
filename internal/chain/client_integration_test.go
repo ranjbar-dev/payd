@@ -6,22 +6,29 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"payd/internal/config"
+	"payd/internal/store"
 )
 
 func TestNileReadIntegration(t *testing.T) {
 	if os.Getenv("PAYD_NILE_INTEGRATION") != "1" {
 		t.Skip("set PAYD_NILE_INTEGRATION=1 to call Nile")
 	}
+	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = database.Close() }()
 	client, err := New(config.Tron{
 		Endpoints:         []config.Endpoint{{URL: "https://nile.trongrid.io", Weight: 1}},
 		SolidityURL:       "https://nile.trongrid.io",
 		RequestTimeout:    10 * time.Second,
 		DailyRequestQuota: 100_000,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), database)
 	if err != nil {
 		t.Fatal(err)
 	}

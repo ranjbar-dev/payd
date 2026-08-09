@@ -3,6 +3,7 @@ package withdraw
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,7 @@ const (
 type Reader interface {
 	GetNowBlock(context.Context) (json.RawMessage, error)
 	GetTransactionByID(context.Context, string) (json.RawMessage, error)
+	GetAccount(context.Context, string) (json.RawMessage, error)
 	GetAccountResource(context.Context, string) (json.RawMessage, error)
 	DelegateResource(context.Context, string, string, string, int64) (json.RawMessage, error)
 	GetCanDelegatedMaxSize(context.Context, string, string) (json.RawMessage, error)
@@ -103,9 +105,22 @@ func (e *Engine) ProviderBalanceMetric() (trx string, low bool) {
 }
 
 func (e *Engine) Run(ctx context.Context) {
-	// WDR-019a: forced startup reconciliation completes before the first claim.
-	if err := e.recover(ctx, true); err != nil && ctx.Err() == nil {
-		e.logger.Error("withdrawal startup recovery", "error", err)
+	// WDR-019a: forced startup reconciliation must succeed before the first claim.
+	for ctx.Err() == nil {
+		if err := e.recover(ctx, true); err == nil {
+			break
+		} else {
+			e.logger.Error("withdrawal startup recovery", "error", err)
+		}
+		timer := time.NewTimer(tickInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	for ctx.Err() == nil {
 		if err := e.Tick(ctx); err != nil && ctx.Err() == nil {
@@ -170,7 +185,26 @@ func (e *Engine) recover(ctx context.Context, force bool) error {
 				}
 				continue
 			}
-			if w.Status == "awaiting_resources" {
+			if w.Status == "awaiting_energy" {
+				if !force {
+					continue
+				}
+				body, err := e.reader.GetAccountResource(ctx, w.FromAddress)
+				if err != nil {
+					return err
+				}
+				resources, err := parseResources(body)
+				if err != nil {
+					return err
+				}
+				e.mu.RLock()
+				minimum := e.config.Resources.MinEnergy
+				e.mu.RUnlock()
+				if err := e.store.ReconcileWithdrawalEnergy(ctx, w.ID, resources.energy >= minimum, now); err != nil { // WDR-019
+					return err
+				}
+			}
+			if w.Status == "awaiting_resources" || w.Status == "awaiting_energy" { // WDR-019
 				if err := e.acquireAndSend(ctx, w); err != nil {
 					return err
 				}
@@ -250,6 +284,12 @@ func (e *Engine) acquireAndSend(ctx context.Context, w store.Withdrawal) error {
 			if grant, found, err := e.store.ResourceGrantForWithdrawal(ctx, w.ID, "ENERGY"); err != nil {
 				return err
 			} else if found && grant.Status != "failed" {
+				if grant.TxID != "" && grant.FeeRaw == "" {
+					pending, err := e.reconcileResourceGrant(ctx, grant, cfg)
+					if err != nil || pending {
+						return err
+					}
+				}
 				energySource = "self_delegated"
 				if err := e.store.ConfirmResourceGrant(ctx, grant.ID, e.now()); err != nil {
 					return err
@@ -266,7 +306,7 @@ func (e *Engine) acquireAndSend(ctx context.Context, w store.Withdrawal) error {
 	}
 	bandwidthSource := "free"
 	if resources.bandwidth < cfg.Resources.MinBandwidth {
-		if e.canBurnBandwidth(ctx, w, asset, cfg) {
+		if e.canBurnBandwidth(ctx, w, asset, cfg, bandwidthGrant, bandwidthGrantFound) {
 			bandwidthSource = "burned"
 			if bandwidthGrantFound && bandwidthGrant.Status != "failed" && bandwidthGrant.Source == "topup" {
 				bandwidthSource = "topup"
@@ -295,6 +335,12 @@ func (e *Engine) acquireAndSend(ctx context.Context, w store.Withdrawal) error {
 			return e.store.FailWithdrawalResources(ctx, w.ID, "bandwidth_unavailable", e.now(), e.eventConfig()) // RES-009
 		}
 	} else if bandwidthGrantFound && bandwidthGrant.Status != "failed" {
+		if bandwidthGrant.TxID != "" && bandwidthGrant.FeeRaw == "" {
+			pending, err := e.reconcileResourceGrant(ctx, bandwidthGrant, cfg)
+			if err != nil || pending {
+				return err
+			}
+		}
 		if err := e.store.ConfirmResourceGrant(ctx, bandwidthGrant.ID, e.now()); err != nil {
 			return err
 		}
@@ -376,7 +422,8 @@ func (e *Engine) referenceBlock(ctx context.Context) (store.ReferenceBlock, erro
 	return parseReferenceBlock(raw)
 }
 
-func (e *Engine) canBurnBandwidth(ctx context.Context, w store.Withdrawal, asset config.Asset, cfg config.Config) bool {
+func (e *Engine) canBurnBandwidth(ctx context.Context, w store.Withdrawal, asset config.Asset, cfg config.Config,
+	grant store.ResourceGrant, grantFound bool) bool {
 	params, err := e.store.LoadChainParameters(ctx)
 	if err != nil {
 		return false
@@ -388,6 +435,25 @@ func (e *Engine) canBurnBandwidth(ctx context.Context, w store.Withdrawal, asset
 	available, ok := new(big.Int).SetString(balance.ConfirmedRaw, 10)
 	if !ok {
 		return false
+	}
+	// A solid top-up is owned-to-owned, so use the confirmed chain balance for
+	// RES-006 instead of waiting for the general payment ledger to mirror it.
+	if grantFound && grant.Source == "topup" && grant.FeeRaw != "" {
+		body, readErr := e.reader.GetAccount(ctx, w.FromAddress)
+		if readErr != nil {
+			return false
+		}
+		var account struct {
+			Balance json.Number `json:"balance"`
+		}
+		if json.Unmarshal(body, &account) != nil {
+			return false
+		}
+		chainBalance, valid := new(big.Int).SetString(string(account.Balance), 10)
+		if !valid || chainBalance.Sign() < 0 {
+			return false
+		}
+		available = chainBalance
 	}
 	if asset.Kind == "native" {
 		amount, valid := new(big.Int).SetString(w.AmountRaw, 10)
@@ -415,9 +481,16 @@ func (e *Engine) sourceEnergy(ctx context.Context, w store.Withdrawal, resources
 	if err != nil || pending {
 		return false, "", err
 	}
-	params, err := e.store.LoadChainParameters(ctx)
-	if err != nil || !cfg.Energy.FallbackToBurn {
+	if !cfg.Energy.FallbackToBurn {
 		return false, "", e.store.FailWithdrawalResources(ctx, w.ID, "energy_unavailable", e.now(), e.eventConfig())
+	}
+	params, err := e.store.LoadChainParameters(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = e.store.SetWithdrawalResourceState(ctx, w.ID, w.Status, "awaiting_resources", "", "") // RES-022
+		return false, "", err
+	}
+	if err != nil {
+		return false, "", err
 	}
 	cost := energy.BurnCostSun(cfg.Resources.MinEnergy-resources.energy, params.EnergyFee)
 	ceiling, err := store.ParseUnits(cfg.Energy.MaxBurnTRX, 6)
@@ -851,6 +924,10 @@ func (e *Engine) reconcileResourceGrant(ctx context.Context, grant store.Resourc
 		}
 		if !solid {
 			return true, nil
+		}
+		if err := e.store.RecordResourceGrantReceipt(ctx, grant.ID, receipt.FeeRaw, receipt.BlockHeight,
+			receipt.BlockTimestamp, cfg.Resources.ResourceWalletIndex, e.now()); err != nil {
+			return false, err
 		}
 		if _, err := e.store.RecordResourceGrantLookup(ctx, grant.ID, nil); err != nil {
 			return false, err

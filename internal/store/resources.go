@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 )
 
 type ResourceGrant struct {
 	ID, WithdrawalID, ReceiverAddress, ResourceType, Source, AmountSun string
-	TxID, Status, BroadcastResponse, FailureReason                     string
+	TxID, Status, BroadcastResponse, FailureReason, FeeRaw             string
 	AddressID, CreatedAt                                               int64
 	LookupFailures                                                     int64
 	LastLookupError                                                    string
@@ -19,7 +20,8 @@ type ResourceGrant struct {
 
 const resourceGrantSelect = `SELECT id,COALESCE(withdrawal_id,''),address_id,COALESCE(receiver_address,''),resource_type,
 	source,amount_sun,COALESCE(txid,''),status,created_at,broadcast_attempted_at,expiration_at,
-	COALESCE(broadcast_response,''),COALESCE(failure_reason,''),lookup_failures,COALESCE(last_lookup_error,''),confirmed_at FROM resource_grants`
+	COALESCE(broadcast_response,''),COALESCE(failure_reason,''),lookup_failures,COALESCE(last_lookup_error,''),
+	COALESCE(fee_raw,''),confirmed_at FROM resource_grants`
 
 func scanResourceGrant(row rowScanner) (ResourceGrant, error) {
 	var grant ResourceGrant
@@ -27,7 +29,7 @@ func scanResourceGrant(row rowScanner) (ResourceGrant, error) {
 	err := row.Scan(&grant.ID, &grant.WithdrawalID, &grant.AddressID, &grant.ReceiverAddress,
 		&grant.ResourceType, &grant.Source, &grant.AmountSun, &grant.TxID, &grant.Status,
 		&grant.CreatedAt, &attempted, &expiration, &grant.BroadcastResponse, &grant.FailureReason,
-		&grant.LookupFailures, &grant.LastLookupError, &confirmed)
+		&grant.LookupFailures, &grant.LastLookupError, &grant.FeeRaw, &confirmed)
 	if attempted.Valid {
 		grant.BroadcastAttemptedAt = &attempted.Int64
 	}
@@ -110,6 +112,63 @@ func (s *Store) ConfirmResourceGrant(ctx context.Context, id string, now time.Ti
 	_, err := s.normal.ExecContext(ctx, `UPDATE resource_grants SET status='confirmed',confirmed_at=?
 		WHERE id=? AND status NOT IN ('confirmed','failed')`, now.UTC().Unix(), id)
 	return err
+}
+
+// RecordResourceGrantReceipt stores the solid receipt and debits its network
+// fee from the resource wallet in the same transaction (WDR-023a).
+func (s *Store) RecordResourceGrantReceipt(ctx context.Context, id, feeRaw string, blockHeight, blockTimestamp int64, resourceWalletIndex uint32, now time.Time) error {
+	fee, ok := new(big.Int).SetString(feeRaw, 10)
+	if !ok || fee.Sign() < 0 {
+		return fmt.Errorf("invalid resource grant fee %q", feeRaw)
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var txid, source, amount, receiver string
+	if err := tx.QueryRowContext(ctx, "SELECT txid,source,amount_sun,receiver_address FROM resource_grants WHERE id=?", id).
+		Scan(&txid, &source, &amount, &receiver); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE resource_grants SET fee_raw=COALESCE(fee_raw,?) WHERE id=?", fee.String(), id); err != nil {
+		return err
+	}
+	if fee.Sign() > 0 || source == "topup" {
+		var addressID int64
+		var address string
+		if err := tx.QueryRowContext(ctx, "SELECT id,address FROM addresses WHERE hd_index=? AND state='disabled'", resourceWalletIndex).Scan(&addressID, &address); err != nil {
+			return err
+		}
+		if fee.Sign() > 0 {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO payments(txid,log_index,direction,block_height,block_id,block_timestamp,
+				from_address,to_address,address_id,asset,amount_raw,is_dust,status,detected_at,confirmed_at)
+				VALUES (?,-1,'out',?,'',?,?,'network_fee',?,'TRX',?,0,'confirmed',?,?)`, txid, blockHeight,
+				blockTimestamp, address, addressID, fee.String(), now.UTC().Unix(), now.UTC().Unix()); err != nil {
+				return err
+			}
+		}
+		if source == "topup" {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO payments(txid,log_index,direction,block_height,block_id,block_timestamp,
+				from_address,to_address,address_id,asset,amount_raw,is_dust,status,detected_at,confirmed_at)
+				VALUES (?,0,'out',?,'',?,?,?,?, 'TRX',?,0,'confirmed',?,?)
+				ON CONFLICT(txid,log_index) DO UPDATE SET status='confirmed',confirmed_at=excluded.confirmed_at`, txid,
+				blockHeight, blockTimestamp, address, receiver, addressID, amount, now.UTC().Unix(), now.UTC().Unix()); err != nil {
+				return err
+			}
+			var receiverID int64
+			if err := tx.QueryRowContext(ctx, "SELECT id FROM addresses WHERE address=?", receiver).Scan(&receiverID); err != nil {
+				return err
+			}
+			if err := recalculateBalance(tx, receiverID, "TRX"); err != nil {
+				return err
+			}
+		}
+		if err := recalculateBalance(tx, addressID, "TRX"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecordResourceGrantLookup(ctx context.Context, id string, lookupErr error) (int64, error) {

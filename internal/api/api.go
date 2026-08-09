@@ -328,12 +328,49 @@ func (s *Server) withdrawalLimits(w http.ResponseWriter, r *http.Request) {
 func (s *Server) withdrawalJSON(withdrawal store.Withdrawal) map[string]any {
 	decimals, _ := s.assetDecimals(withdrawal.Asset)
 	amount, _ := store.FormatUnits(withdrawal.AmountRaw, decimals)
+	networkFee, resourceFee, bandwidthCost, totalCost := withdrawalCosts(withdrawal)
 	return map[string]any{"id": withdrawal.ID, "from_address": withdrawal.FromAddress, "to_address": withdrawal.ToAddress,
 		"asset": withdrawal.Asset, "amount": amount, "amount_raw": withdrawal.AmountRaw, "amount_usd": withdrawal.AmountUSD,
 		"status": withdrawal.Status, "txid": withdrawal.TxID, "failure_reason": withdrawal.FailureReason,
 		"resolved_by": withdrawal.ResolvedBy, "broadcast_response": withdrawal.BroadcastResponse,
-		"fee_raw": withdrawal.FeeRaw, "energy_used": withdrawal.EnergyUsed, "last_lookup_error": withdrawal.LastLookupError,
+		"fee_raw": withdrawal.FeeRaw, "network_fee_trx": networkFee, "energy_used": withdrawal.EnergyUsed,
+		"energy_source": withdrawal.EnergySource, "energy_cost_trx": zeroIfEmpty(withdrawal.EnergyCostTRX),
+		"bandwidth_source": withdrawal.BandwidthSource, "bandwidth_cost_trx": bandwidthCost,
+		"resource_fee_trx": resourceFee, "total_cost_trx": totalCost, "last_lookup_error": withdrawal.LastLookupError,
 		"created_at": withdrawal.CreatedAt, "broadcast_at": withdrawal.BroadcastAt, "confirmed_at": withdrawal.ConfirmedAt}
+}
+
+// WDR-025: withdrawalCosts keeps on-chain fees in base units until the final format.
+// Burned energy/bandwidth is already part of fee_raw; rented energy is not.
+func withdrawalCosts(withdrawal store.Withdrawal) (network, resource, bandwidth, total string) {
+	parseRaw := func(value string) *big.Int {
+		amount, ok := new(big.Int).SetString(value, 10)
+		if !ok || amount.Sign() < 0 {
+			return new(big.Int)
+		}
+		return amount
+	}
+	networkRaw := parseRaw(withdrawal.FeeRaw)
+	energyGrantRaw := parseRaw(withdrawal.EnergyGrantFeeRaw)
+	bandwidthRaw := parseRaw(withdrawal.BandwidthGrantFeeRaw)
+	resourceRaw := new(big.Int).Add(new(big.Int).Set(energyGrantRaw), bandwidthRaw)
+	totalValue := new(big.Rat).SetFrac(new(big.Int).Add(new(big.Int).Set(networkRaw), resourceRaw), big.NewInt(1_000_000))
+	if withdrawal.EnergySource == "rented" {
+		if rented, ok := new(big.Rat).SetString(withdrawal.EnergyCostTRX); ok && rented.Sign() >= 0 {
+			totalValue.Add(totalValue, rented)
+		}
+	}
+	network, _ = store.FormatUnits(networkRaw.String(), 6)
+	resource, _ = store.FormatUnits(resourceRaw.String(), 6)
+	bandwidth, _ = store.FormatUnits(bandwidthRaw.String(), 6)
+	return network, resource, bandwidth, decimalRat(totalValue)
+}
+
+func zeroIfEmpty(value string) string {
+	if value == "" {
+		return "0"
+	}
+	return value
 }
 
 func (s *Server) writeWithdrawalError(w http.ResponseWriter, err error) {

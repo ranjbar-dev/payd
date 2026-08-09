@@ -19,6 +19,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/base58"
 
 	"payd/internal/config"
+	"payd/internal/store"
 )
 
 const (
@@ -83,12 +84,15 @@ type endpointPool struct {
 }
 
 // New validates the endpoint boundary and builds separate read and broadcast clients (CHN-020..025).
-func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
+func New(cfg config.Tron, logger *slog.Logger, database *store.Store) (*Client, error) {
 	if cfg.RequestTimeout != readTimeout {
 		return nil, fmt.Errorf("TronGrid read timeout must be 10s (CHN-024)")
 	}
 	if cfg.DailyRequestQuota <= 0 {
 		return nil, errors.New("TronGrid daily request quota must be positive")
+	}
+	if database == nil {
+		return nil, errors.New("TronGrid client requires a store")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -125,7 +129,10 @@ func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
 		}
 		logger.Warn("solidity endpoint shares a TronGrid host; independent host preferred", "host", solidityURL.Hostname()) // CHN-026
 	}
-	counter := newDailyCounter(cfg.DailyRequestQuota, logger)
+	counter, err := newDailyCounter(cfg.DailyRequestQuota, logger, database)
+	if err != nil {
+		return nil, fmt.Errorf("load TronGrid request history: %w", err)
+	}
 	errorCounts := newErrorCounter()
 	httpClient := &http.Client{}
 	core := &clientCore{
@@ -155,6 +162,10 @@ func New(cfg config.Tron, logger *slog.Logger) (*Client, error) {
 
 // RequestsToday is the UTC-day request count used by the later metrics endpoint (CHN-023, DB-002a, RL-004).
 func (c *Client) RequestsToday() int64 { return c.counter.requestsToday() }
+
+// QuotaProjectionRatio is tomorrow's least-squares projection from the last
+// seven complete UTC days, bounded below by today's actual usage (RL-006).
+func (c *Client) QuotaProjectionRatio() float64 { return c.counter.projectionRatio() }
 
 func (c *Client) ErrorCounts() map[string]uint64 { return c.errors.snapshot() }
 
@@ -331,7 +342,9 @@ func (c *clientCore) sendOnce(ctx context.Context, endpoint endpointRef, method,
 	if endpoint.apiKey != "" {
 		request.Header.Set("TRON-PRO-API-KEY", endpoint.apiKey) // CHN-020
 	}
-	c.counter.increment()
+	if err := c.counter.increment(ctx); err != nil {
+		return Response{}, fmt.Errorf("record TronGrid request: %w", err)
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		c.errors.add("network")
@@ -417,33 +430,61 @@ func (p *endpointPool) succeeded(index int) {
 }
 
 type dailyCounter struct {
-	mu      sync.Mutex
-	day     string
-	count   int64
-	softCap int64
-	warned  bool
-	now     func() time.Time
-	logger  *slog.Logger
+	mu               sync.Mutex
+	day              int64
+	count            int64
+	quota            int64
+	softCap          int64
+	projectionWarned bool
+	softCapWarned    bool
+	now              func() time.Time
+	logger           *slog.Logger
+	store            *store.Store
+	counts           map[int64]int64
 }
 
-func newDailyCounter(quota int64, logger *slog.Logger) *dailyCounter {
-	return &dailyCounter{softCap: quota * 70 / 100, now: time.Now, logger: logger}
-}
-
-func (c *dailyCounter) increment() {
-	c.mu.Lock()
-	c.rollUTC()
-	c.count++
-	warnAt := (c.softCap*80 + 99) / 100
-	shouldWarn := !c.warned && c.count >= warnAt
-	if shouldWarn {
-		c.warned = true
+func newDailyCounter(quota int64, logger *slog.Logger, database *store.Store) (*dailyCounter, error) {
+	c := &dailyCounter{quota: quota, softCap: quota * 70 / 100, now: time.Now, logger: logger,
+		store: database, counts: make(map[int64]int64)}
+	history, err := database.TronGridRequestHistory(context.Background(), c.now())
+	if err != nil {
+		return nil, err
 	}
-	count, day := c.count, c.day
-	c.mu.Unlock()
+	for _, day := range history {
+		c.counts[day.DayStart] = day.Requests
+	}
+	c.rollUTC()
+	return c, nil
+}
+
+func (c *dailyCounter) increment(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rollUTC()
+	count, err := c.store.RecordTronGridRequest(ctx, c.now())
+	if err != nil {
+		return err
+	}
+	c.count, c.counts[c.day] = count, count
+	warnAt := (c.softCap*80 + 99) / 100
+	projection := c.projectionRatioLocked()
+	shouldWarn := !c.projectionWarned && projection >= .60
+	shouldSoftCapWarn := !c.softCapWarned && c.count >= warnAt
 	if shouldWarn {
+		c.projectionWarned = true
+	}
+	if shouldSoftCapWarn {
+		c.softCapWarned = true
+	}
+	day := time.Unix(c.day, 0).UTC().Format(time.DateOnly)
+	if shouldWarn {
+		c.logger.Warn("TronGrid seven-day quota projection crossed 60%", "utc_day", day, "requests", count,
+			"projection_ratio", projection, "daily_quota", c.quota) // RL-006
+	}
+	if shouldSoftCapWarn {
 		c.logger.Warn("TronGrid daily request usage reached 80% of soft cap", "utc_day", day, "requests", count, "soft_cap", c.softCap) // CHN-023
 	}
+	return nil
 }
 
 func (c *dailyCounter) requestsToday() int64 {
@@ -453,10 +494,49 @@ func (c *dailyCounter) requestsToday() int64 {
 	return c.count
 }
 
+func (c *dailyCounter) projectionRatio() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rollUTC()
+	return c.projectionRatioLocked()
+}
+
+func (c *dailyCounter) projectionRatioLocked() float64 {
+	projected := float64(c.count)
+	values := make([]float64, 7)
+	complete := true
+	for i := range 7 {
+		day := c.day - int64(7-i)*int64(24*time.Hour/time.Second)
+		count, ok := c.counts[day]
+		if !ok {
+			complete = false
+			break
+		}
+		values[i] = float64(count)
+	}
+	if complete {
+		var mean, numerator float64
+		for _, value := range values {
+			mean += value
+		}
+		mean /= float64(len(values))
+		for i, value := range values {
+			numerator += (float64(i) - 3) * (value - mean)
+		}
+		projected = max(projected, mean+4*numerator/28)
+	}
+	return max(projected, 0) / float64(c.quota)
+}
+
 func (c *dailyCounter) rollUTC() {
-	day := c.now().UTC().Format(time.DateOnly)
+	day := c.now().UTC().Truncate(24 * time.Hour).Unix()
 	if day != c.day {
-		c.day, c.count, c.warned = day, 0, false // DB-002a
+		c.day, c.count, c.projectionWarned, c.softCapWarned = day, c.counts[day], false, false // DB-002a
+		for recorded := range c.counts {
+			if recorded < day-int64(7*24*time.Hour/time.Second) {
+				delete(c.counts, recorded)
+			}
+		}
 	}
 }
 
