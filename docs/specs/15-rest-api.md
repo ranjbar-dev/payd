@@ -169,7 +169,25 @@ specific support or operator-visibility gap without adding a fund-moving retry.
 | API-035 | `POST /ipn/test` | `orders:write` | MUST send one signed `test.ping` directly to the named configured consumer, return status code and latency, reuse the production signature implementation, and never write an outbox row, allowing webhook validation without fake business events |
 | API-036 | `POST /ipn/replay` | `orders:write` | MUST filter dead events by consumer and inclusive Unix `from`/`to`, default `dry_run` to true, return only a count, and mutate no more than 200 events per call, making bulk recovery possible within the API rate limit |
 
-## 15.6 API conventions
+## 15.6 Tier C operations, accounting, and compliance additions
+
+| ID | Method and path | Scope | Requirement and rationale |
+|---|---|---|---|
+| API-037 | `GET /chain/status` | `wallets:read` | MUST return last and solidified heights, lag in blocks and seconds, reorg suspicion, and the last block timestamp, so degraded readiness has a numeric diagnosis |
+| API-038 | `GET /chain/quota` | `wallets:read` | MUST return today's requests, configured daily cap, exact percent used, and today plus the six prior UTC days from the persisted RL-006 counter, so quota exhaustion is visible before detection stops |
+| API-039 | `GET /workers` | `wallets:read` | MUST expose worker heartbeat age, last error, error count, and restart count from `worker_health` with API-025 pagination, so a wedged worker is distinguishable from a healthy process |
+| API-040 | `GET /audit` | `admin:read` | MUST list `audit_log` newest first, filter by actor/action/subject and inclusive Unix `from`/`to`, and use API-025 pagination, making the existing compliance trail reviewable |
+| API-041 | `GET /resources/grants` | `wallets:read` | MUST list resource grants with API-025 pagination and filters for withdrawal, status, and resource type, exposing why a withdrawal is waiting for resources |
+| API-042 | `GET /resources/wallet` | `wallets:read` | MUST return the configured resource wallet's address, confirmed TRX, available/limit energy and bandwidth, and non-failed self-delegation count and stake by resource, exposing this withdrawal-path dependency |
+| API-043 | `GET /config` | `admin:read` | MUST return only allowlisted asset, withdrawal, chain-depth, order-TTL, energy-enabled, and consumer-name fields; it MUST have no field capable of containing endpoint/API/TOTP/key-hash/consumer credentials (CFG-011), preventing environment mistakes without creating a secret endpoint |
+| API-044 | `GET /reports/volume` | `orders:read` | MUST require inclusive Unix `from`/`to`, group by UTC day, asset, or consumer, and return order count, paid-or-confirmed count, actual received volume per asset, exact snapshotted USD total, and `unpriced_paid_count`; orders without an immutable price snapshot MUST NOT be assigned a guessed historical USD value |
+| API-045 | `GET /reports/fees` | `wallets:read` | MUST require inclusive Unix `from`/`to` over withdrawal `created_at` and return exact TRX totals by energy source, by bandwidth source, and provider-attempt rental spend using the same energy total calculation as operational metrics, enabling resource-strategy comparisons |
+| API-046 | `GET /export/orders.csv`, `GET /export/withdrawals.csv` | `orders:read`, `withdrawals:read` | MUST stream `encoding/csv` attachments without materializing all rows, reuse the JSON list filters, default to 10,000 rows, and reject caps outside 1–100,000, supporting bounded accounting exports |
+
+`admin:read` is intentionally limited to API-040 and API-043. No other new
+scope is introduced by the Tier C additions.
+
+## 15.7 API conventions
 
 | ID | Requirement |
 |---|---|

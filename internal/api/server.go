@@ -29,6 +29,8 @@ type Server struct {
 	mu                 sync.RWMutex
 	assets             map[string]config.Asset
 	price              config.Price
+	tron               config.Tron
+	orders             config.Orders
 	ipn                config.IPN
 	energy             config.Energy
 	resources          config.Resources
@@ -122,6 +124,6 @@ func (s *Server) UpdateConfig(cfg config.Config) {
 	for _, asset := range cfg.Assets {
 		s.assets[asset.Symbol] = asset
 	}
-	s.price, s.ipn, s.energy = cfg.Price, cfg.IPN, cfg.Energy
+	s.price, s.tron, s.orders, s.ipn, s.energy = cfg.Price, cfg.Tron, cfg.Orders, cfg.IPN, cfg.Energy
 	s.resources, s.withdrawal, s.cooldown = cfg.Resources, cfg.Withdrawal, cfg.Wallet.Cooldown
 }

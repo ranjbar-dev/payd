@@ -93,7 +93,8 @@ auth:
   api_keys:
     - name: "local"
       key_hash: "argon2id$replace-with-a-real-hash"
-      scopes: ["orders:write"]
+      # admin:read grants redacted config and audit-log visibility only.
+      scopes: ["orders:write", "admin:read"]
   totp_secret: "BASE32SECRET"
 log:
   level: "info"

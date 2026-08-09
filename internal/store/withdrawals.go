@@ -228,6 +228,29 @@ func (s *Store) ListWithdrawals(ctx context.Context, status string, limit int) (
 	return result, rows.Err()
 }
 
+func (s *Store) StreamWithdrawals(ctx context.Context, status string, limit int, visit func(Withdrawal) error) error {
+	query, args := withdrawalSelect, []any{}
+	if status != "" {
+		query, args = query+" WHERE w.status=?", append(args, status)
+	}
+	query, args = query+" ORDER BY w.created_at DESC,w.id DESC LIMIT ?", append(args, limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		withdrawal, err := scanWithdrawal(rows)
+		if err != nil {
+			return err
+		}
+		if err := visit(withdrawal); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 func (s *Store) WithdrawalUSDUsed(ctx context.Context, now time.Time) (*big.Rat, error) {
 	rows, err := s.normal.QueryContext(ctx, `SELECT amount_usd FROM withdrawals WHERE created_at >= ?
         AND status IN ('requested','awaiting_resources','awaiting_energy','signing','broadcast','confirmed')`, now.UTC().Truncate(24*time.Hour).Unix())

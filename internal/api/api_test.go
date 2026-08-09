@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1047,6 +1048,280 @@ func TestTierBRouteAuthenticationAndScopes(t *testing.T) {
 	}
 }
 
+func TestC1ChainStatusC2QuotaAndC3WorkerPagination(t *testing.T) {
+	server, database, path, cleanup := testServerWithPath(t, 2)
+	defer cleanup()
+	now := time.Now().UTC()
+	if err := database.CommitBlock(context.Background(), store.BlockRecord{Height: 1, ID: "ops-block", ParentID: "genesis",
+		Timestamp: now.Add(-30 * time.Second).Unix(), ProcessedAt: now.Unix()}, 64, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetReorgSuspicion(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	status := request(t, server.Handler(), http.MethodGet, "/api/v1/chain/status", "")
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"last_height":1`) ||
+		!strings.Contains(status.Body.String(), `"reorg_suspected":true`) || !strings.Contains(status.Body.String(), `"lag_seconds"`) {
+		t.Fatalf("chain status = %d %s", status.Code, status.Body.String())
+	}
+	for range 2 {
+		if _, err := database.RecordTronGridRequest(context.Background(), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.RecordTronGridRequest(context.Background(), now.Add(-6*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RecordTronGridRequest(context.Background(), now.Add(-7*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	quota := request(t, server.Handler(), http.MethodGet, "/api/v1/chain/quota", "")
+	if quota.Code != http.StatusOK || !strings.Contains(quota.Body.String(), `"requests_today":2`) ||
+		strings.Contains(quota.Body.String(), strconv.FormatInt(now.Add(-7*24*time.Hour).Truncate(24*time.Hour).Unix(), 10)) {
+		t.Fatalf("chain quota = %d %s", quota.Code, quota.Body.String())
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	if _, err := raw.Exec(`INSERT INTO worker_health(worker,last_tick_at,last_error,error_count,restarts) VALUES
+		('confirm',?,'stalled',2,1),('follower',?,NULL,0,0)`, now.Add(-10*time.Second).Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var page struct {
+		Workers    []map[string]any `json:"workers"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	first := request(t, server.Handler(), http.MethodGet, "/api/v1/workers?limit=1", "")
+	decodeResponse(t, first, &page)
+	if len(page.Workers) != 1 || page.NextCursor == "" || page.Workers[0]["worker"] != "confirm" {
+		t.Fatalf("worker first page = %#v", page)
+	}
+	second := request(t, server.Handler(), http.MethodGet, "/api/v1/workers?limit=1&cursor="+page.NextCursor, "")
+	decodeResponse(t, second, &page)
+	if len(page.Workers) != 1 || page.Workers[0]["worker"] != "follower" {
+		t.Fatalf("worker second page = %#v", page)
+	}
+	if invalid := request(t, server.Handler(), http.MethodGet, "/api/v1/workers?limit=0", ""); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("worker invalid limit = %d", invalid.Code)
+	}
+}
+
+func TestC4AuditC5GrantPaginationAndC6ResourceWallet(t *testing.T) {
+	server, database, path, cleanup := testServerWithPath(t, 2)
+	defer cleanup()
+	now := time.Now().UTC()
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	if _, err := raw.Exec(`INSERT INTO audit_log(actor,action,subject,detail,ip,created_at) VALUES
+		('operator','wallet.disable','first','{}','127.0.0.1',?),
+		('operator','wallet.disable','second','{}','127.0.0.2',?)`, now.Add(-time.Second).Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var auditPage struct {
+		Entries    []map[string]any `json:"entries"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	firstAudit := request(t, server.Handler(), http.MethodGet, "/api/v1/audit?actor=operator&action=wallet.disable&limit=1", "")
+	decodeResponse(t, firstAudit, &auditPage)
+	if len(auditPage.Entries) != 1 || auditPage.NextCursor == "" || auditPage.Entries[0]["subject"] != "second" {
+		t.Fatalf("audit first page = %#v", auditPage)
+	}
+	secondAudit := request(t, server.Handler(), http.MethodGet, "/api/v1/audit?limit=1&cursor="+auditPage.NextCursor, "")
+	decodeResponse(t, secondAudit, &auditPage)
+	if len(auditPage.Entries) != 1 || auditPage.Entries[0]["subject"] != "first" {
+		t.Fatalf("audit second page = %#v", auditPage)
+	}
+	if invalid := request(t, server.Handler(), http.MethodGet, "/api/v1/audit?limit=201", ""); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("audit invalid limit = %d", invalid.Code)
+	}
+	addresses, err := database.WalletAddresses(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	energyGrant, err := database.CreateManualResourceGrant(context.Background(), addresses[0].Address, "ENERGY", "1000000", 1,
+		"operator", "127.0.0.1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bandwidthGrant, err := database.CreateManualResourceGrant(context.Background(), addresses[1].Address, "BANDWIDTH", "2000000", 2,
+		"operator", "127.0.0.1", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered := request(t, server.Handler(), http.MethodGet, "/api/v1/resources/grants?resource_type=ENERGY", "")
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), energyGrant.ID) || strings.Contains(filtered.Body.String(), bandwidthGrant.ID) {
+		t.Fatalf("grant filter = %d %s", filtered.Code, filtered.Body.String())
+	}
+	var grantPage struct {
+		Grants     []map[string]any `json:"grants"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	firstGrant := request(t, server.Handler(), http.MethodGet, "/api/v1/resources/grants?limit=1", "")
+	decodeResponse(t, firstGrant, &grantPage)
+	if len(grantPage.Grants) != 1 || grantPage.NextCursor == "" {
+		t.Fatalf("grant first page = %#v", grantPage)
+	}
+	secondGrant := request(t, server.Handler(), http.MethodGet, "/api/v1/resources/grants?limit=1&cursor="+grantPage.NextCursor, "")
+	decodeResponse(t, secondGrant, &grantPage)
+	if len(grantPage.Grants) != 1 {
+		t.Fatalf("grant second page = %#v", grantPage)
+	}
+	if invalid := request(t, server.Handler(), http.MethodGet, "/api/v1/resources/grants?limit=0", ""); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("grant invalid limit = %d", invalid.Code)
+	}
+	resourceID, resourceAddress, err := database.ResourceWallet(context.Background(), testConfig(2).Resources.ResourceWalletIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateAddressResources(context.Background(), store.ResourceReading{AddressID: resourceID,
+		EnergyLimit: 1000, EnergyUsed: 100, BandwidthLimit: 500, BandwidthUsed: 50}, now); err != nil {
+		t.Fatal(err)
+	}
+	wallet := request(t, server.Handler(), http.MethodGet, "/api/v1/resources/wallet", "")
+	if wallet.Code != http.StatusOK || !strings.Contains(wallet.Body.String(), resourceAddress) ||
+		!strings.Contains(wallet.Body.String(), `"available":900`) || !strings.Contains(wallet.Body.String(), `"ENERGY"`) {
+		t.Fatalf("resource wallet = %d %s", wallet.Code, wallet.Body.String())
+	}
+}
+
+func TestC7EffectiveConfigIsStrictlyRedacted(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	cfg := testConfig(1)
+	cfg.Tron.Endpoints = []config.Endpoint{{URL: "https://secret-endpoint.invalid", APIKey: "tron-endpoint-secret", Weight: 1}}
+	cfg.Tron.SolidityURL = "https://secret-solidity.invalid"
+	cfg.Energy.Enabled = true
+	server.UpdateConfig(cfg)
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/config", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"confirmations_required":19`) ||
+		!strings.Contains(response.Body.String(), `"default_ttl_seconds":1800`) || !strings.Contains(response.Body.String(), `"enabled":true`) {
+		t.Fatalf("effective config = %d %s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"consumer-secret", "analytics-secret", "energy-key", "energy-secret", testTOTP,
+		"tron-endpoint-secret", "secret-endpoint.invalid", "secret-solidity.invalid", testKeyHash(testAPIKey)} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("effective config exposed %q: %s", secret, response.Body.String())
+		}
+	}
+}
+
+func TestC8VolumeAndC9FeeReportsUseExactStoredValues(t *testing.T) {
+	server, database, path, cleanup := testServerWithPath(t, 3)
+	defer cleanup()
+	firstResponse := request(t, server.Handler(), http.MethodPost, "/api/v1/orders", `{"asset":"USDT","amount":"1","external_ref":"report-one"}`)
+	secondResponse := request(t, server.Handler(), http.MethodPost, "/api/v1/orders", `{"asset":"USDT","amount":"2","external_ref":"report-two"}`)
+	var first, second map[string]any
+	decodeResponse(t, firstResponse, &first)
+	decodeResponse(t, secondResponse, &second)
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	if _, err := raw.Exec(`UPDATE orders SET status='confirmed',received_raw='1000000',price_usd='1',created_at=? WHERE id=?`, day.Add(time.Hour).Unix(), first["id"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE orders SET status='paid',received_raw='2000000',price_usd=NULL,created_at=? WHERE id=?`, day.Add(2*time.Hour).Unix(), second["id"]); err != nil {
+		t.Fatal(err)
+	}
+	volume := request(t, server.Handler(), http.MethodGet, fmt.Sprintf("/api/v1/reports/volume?from=%d&to=%d&group_by=day", day.Unix(), day.Add(24*time.Hour-time.Second).Unix()), "")
+	if volume.Code != http.StatusOK || !strings.Contains(volume.Body.String(), `"order_count":2`) ||
+		!strings.Contains(volume.Body.String(), `"paid_count":2`) || !strings.Contains(volume.Body.String(), `"USDT":"3"`) ||
+		!strings.Contains(volume.Body.String(), `"usd_total":"1"`) || !strings.Contains(volume.Body.String(), `"unpriced_paid_count":1`) {
+		t.Fatalf("volume report = %d %s", volume.Code, volume.Body.String())
+	}
+	addresses := fundTestWallets(t, database, 1)
+	now := time.Now().UTC()
+	withdrawal, _, err := database.CreateWithdrawal(context.Background(), store.CreateWithdrawal{IdempotencyKey: "fee-report",
+		FromAddress: addresses[0].Address, ToAddress: addresses[1].Address, Asset: "USDT", AmountRaw: "1", AmountUSD: "1",
+		DailyLimitUSD: "1000", RequestedBy: "test", IP: "127.0.0.1", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE withdrawals SET energy_source='burned',energy_cost_trx='0.5',bandwidth_source='delegated' WHERE id=?`, withdrawal.ID); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := database.CreateResourceGrant(context.Background(), withdrawal.ID, addresses[0].ID, addresses[0].Address,
+		"BANDWIDTH", "self_delegated", "1000000", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE resource_grants SET fee_raw='100000',status='confirmed' WHERE id=?`, grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	purchase, err := database.CreateEnergyPurchase(context.Background(), "tronzap", withdrawal.ID, addresses[0].ID,
+		addresses[0].Address, "ENERGY", 100, time.Hour, "3.5", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkEnergyPurchaseAttempt(context.Background(), purchase.ID, "provider-order"); err != nil {
+		t.Fatal(err)
+	}
+	fees := request(t, server.Handler(), http.MethodGet, fmt.Sprintf("/api/v1/reports/fees?from=%d&to=%d", now.Add(-time.Minute).Unix(), now.Add(time.Minute).Unix()), "")
+	if fees.Code != http.StatusOK || !strings.Contains(fees.Body.String(), `"burned":"0.5"`) ||
+		!strings.Contains(fees.Body.String(), `"delegated":"0.1"`) || !strings.Contains(fees.Body.String(), `"rental_spend_trx":"3.5"`) {
+		t.Fatalf("fee report = %d %s", fees.Code, fees.Body.String())
+	}
+}
+
+func TestC10CSVExportsAreAttachmentsWithFiltersAndCaps(t *testing.T) {
+	server, database, cleanup := testServer(t, 3)
+	defer cleanup()
+	created := request(t, server.Handler(), http.MethodPost, "/api/v1/orders", `{"asset":"USDT","amount":"1","external_ref":"csv-one"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create CSV order = %d %s", created.Code, created.Body.String())
+	}
+	addresses := fundTestWallets(t, database, 1)
+	withdrawal, _, err := database.CreateWithdrawal(context.Background(), store.CreateWithdrawal{IdempotencyKey: "csv-withdrawal",
+		FromAddress: addresses[0].Address, ToAddress: addresses[1].Address, Asset: "USDT", AmountRaw: "1", AmountUSD: "1",
+		DailyLimitUSD: "1000", RequestedBy: "test", IP: "127.0.0.1", Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := request(t, server.Handler(), http.MethodGet, "/api/v1/export/orders.csv?external_ref=csv-one&limit=1", "")
+	if orders.Code != http.StatusOK || orders.Header().Get("Content-Type") != "text/csv" ||
+		!strings.Contains(orders.Header().Get("Content-Disposition"), "attachment") || !strings.Contains(orders.Body.String(), "csv-one") {
+		t.Fatalf("orders CSV = %d headers=%v body=%s", orders.Code, orders.Header(), orders.Body.String())
+	}
+	withdrawals := request(t, server.Handler(), http.MethodGet, "/api/v1/export/withdrawals.csv?status=requested", "")
+	if withdrawals.Code != http.StatusOK || withdrawals.Header().Get("Content-Type") != "text/csv" ||
+		!strings.Contains(withdrawals.Body.String(), withdrawal.ID) {
+		t.Fatalf("withdrawals CSV = %d headers=%v body=%s", withdrawals.Code, withdrawals.Header(), withdrawals.Body.String())
+	}
+	for _, target := range []string{"/api/v1/export/orders.csv?limit=0", "/api/v1/export/withdrawals.csv?limit=100001"} {
+		if invalid := request(t, server.Handler(), http.MethodGet, target, ""); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid export cap %s = %d %s", target, invalid.Code, invalid.Body.String())
+		}
+	}
+}
+
+func TestTierCRouteAuthenticationAndScopes(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	routes := []string{"/api/v1/chain/status", "/api/v1/chain/quota", "/api/v1/workers", "/api/v1/audit",
+		"/api/v1/resources/grants", "/api/v1/resources/wallet", "/api/v1/config", "/api/v1/reports/volume",
+		"/api/v1/reports/fees", "/api/v1/export/orders.csv", "/api/v1/export/withdrawals.csv"}
+	for _, target := range routes {
+		t.Run(target, func(t *testing.T) {
+			missing := httptest.NewRecorder()
+			server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, target, nil))
+			if missing.Code != http.StatusUnauthorized {
+				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
+			}
+			unscoped := requestWithKey(t, server.Handler(), http.MethodGet, target, "", testNoScopeAPIKey)
+			if unscoped.Code != http.StatusUnauthorized {
+				t.Fatalf("missing scope = %d %s", unscoped.Code, unscoped.Body.String())
+			}
+		})
+	}
+}
+
 func snapshotRowCounts(t *testing.T, database *sql.DB) map[string]int64 {
 	t.Helper()
 	rows, err := database.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
@@ -1152,17 +1427,19 @@ func testServerWithPath(t *testing.T, poolSize int) (*Server, *store.Store, stri
 func testConfig(poolSize int) config.Config {
 	return config.Config{
 		Wallet: config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
+		Tron:   config.Tron{ConfirmationsRequired: 19, ReorgDepth: 64, DailyRequestQuota: 100000},
 		Assets: []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
 		Orders: config.Orders{DefaultTTL: 30 * time.Minute},
-		IPN: config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{
+		IPN: config.IPN{DefaultConsumer: "shop", Timeout: time.Second, Consumers: []config.Consumer{
 			{Name: "shop", URL: "https://shop.invalid/ipn", Secret: "consumer-secret", ReceivesGlobal: true, Enabled: true},
 			{Name: "analytics", URL: "https://analytics.invalid/ipn", Secret: "analytics-secret", Enabled: true},
 		}},
 		Energy:     config.Energy{Provider: "test-energy", APIKey: config.Secret("energy-key"), APISecret: config.Secret("energy-secret"), BalanceWarnTRX: "1"},
 		Price:      config.Price{Pairs: []string{"TRXUSDT"}, StaleAfter: 5 * time.Minute},
+		Resources:  config.Resources{MinEnergy: 1, MinBandwidth: 1, ResourceWalletIndex: 1000, BandwidthStrategy: "delegate"},
 		Withdrawal: config.Withdrawal{Enabled: true, DailyLimitUSD: "1000", FeeLimitTRX: 100, Expiration: time.Minute, RequireTOTP: true},
 		Auth: config.Auth{TOTPSecret: testTOTP, APIKeys: []config.APIKey{
-			{Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write", "withdrawals:read", "withdrawals:write", "resources:write"}},
+			{Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write", "withdrawals:read", "withdrawals:write", "resources:write", "admin:read"}},
 			{Name: "unscoped", KeyHash: testKeyHash(testNoScopeAPIKey)},
 		}},
 	}

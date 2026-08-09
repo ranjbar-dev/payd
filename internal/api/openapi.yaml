@@ -15,7 +15,8 @@ info:
 
     **Authentication** is a shared secret in the `X-API-Key` request header. Each key
     carries its own set of scopes (`orders:read`, `orders:write`, `wallets:read`,
-    `wallets:write`, `withdrawals:read`, `withdrawals:write`), and every operation
+    `wallets:write`, `withdrawals:read`, `withdrawals:write`, `resources:write`,
+    `admin:read`), and every operation
     below states the one scope it requires. A missing key, a wrong key, or a key
     without the required scope all return the same 401 with no further detail.
 
@@ -44,6 +45,281 @@ tags:
   - name: Operations
   - name: Documentation
 paths:
+  /api/v1/chain/status:
+    get:
+      tags: [Operations]
+      summary: Inspect chain progress
+      description: Returns follower, solidity, lag, and reorg state. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-037]
+      responses:
+        '200':
+          description: Chain progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [last_height, solidified_height, lag_blocks, lag_seconds, reorg_suspected, last_block_timestamp]
+                properties:
+                  last_height: {type: integer, format: int64}
+                  solidified_height: {type: integer, format: int64}
+                  lag_blocks: {type: integer, format: int64}
+                  lag_seconds: {type: integer, format: int64}
+                  reorg_suspected: {type: boolean}
+                  last_block_timestamp: {type: integer, format: int64}
+
+  /api/v1/chain/quota:
+    get:
+      tags: [Operations]
+      summary: Inspect TronGrid quota usage
+      description: Returns today's persisted usage and the last seven UTC days. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-038, RL-006]
+      responses:
+        '200':
+          description: Quota usage.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests_today, daily_request_quota, percent_used, history]
+                properties:
+                  requests_today: {type: integer, format: int64}
+                  daily_request_quota: {type: integer, format: int64}
+                  percent_used: {type: number}
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      required: [day_start, requests]
+                      properties:
+                        day_start: {type: integer, format: int64}
+                        requests: {type: integer, format: int64}
+
+  /api/v1/workers:
+    get:
+      tags: [Operations]
+      summary: List supervised worker health
+      description: Returns persisted heartbeat and error state for every worker. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-039]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Worker health.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workers, next_cursor]
+                properties:
+                  workers:
+                    type: array
+                    items:
+                      type: object
+                      required: [worker, last_tick_at, seconds_since_tick, last_error, error_count, restarts]
+                      properties:
+                        worker: {type: string}
+                        last_tick_at: {type: [integer, 'null'], format: int64}
+                        seconds_since_tick: {type: [integer, 'null'], format: int64}
+                        last_error: {type: string}
+                        error_count: {type: integer, format: int64}
+                        restarts: {type: integer, format: int64}
+                  next_cursor: {type: string}
+
+  /api/v1/audit:
+    get:
+      tags: [Operations]
+      summary: Read the audit log
+      description: Lists newest audit records with exact filters. Requires scope `admin:read`.
+      x-required-scope: admin:read
+      x-requirements: [API-040]
+      parameters:
+        - {name: actor, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: subject, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: integer, format: int64}}
+        - {name: to, in: query, schema: {type: integer, format: int64}}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Audit page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, next_cursor]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, actor, action, subject, detail, ip, created_at]
+                      properties:
+                        id: {type: integer, format: int64}
+                        actor: {type: string}
+                        action: {type: string}
+                        subject: {type: string}
+                        detail: {type: string}
+                        ip: {type: string}
+                        created_at: {type: integer, format: int64}
+                  next_cursor: {type: string}
+
+  /api/v1/resources/grants:
+    get:
+      tags: [Wallets]
+      summary: List resource grants
+      description: Lists resource acquisition attempts and outcomes. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-041]
+      parameters:
+        - {name: withdrawal_id, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: resource_type, in: query, schema: {type: string, enum: [ENERGY, BANDWIDTH]}}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Resource grant page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grants, next_cursor]
+                properties:
+                  grants: {type: array, items: {type: object, additionalProperties: true}}
+                  next_cursor: {type: string}
+
+  /api/v1/resources/wallet:
+    get:
+      tags: [Wallets]
+      summary: Inspect the resource wallet
+      description: Returns its TRX, resources, and outstanding delegations. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-042, RES-014]
+      responses:
+        '200':
+          description: Resource wallet state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [address, trx_balance, energy, bandwidth, outstanding_delegations]
+                properties:
+                  address: {type: string}
+                  trx_balance: {type: string}
+                  energy: {type: object, additionalProperties: true}
+                  bandwidth: {type: object, additionalProperties: true}
+                  outstanding_delegations: {type: object, additionalProperties: true}
+
+  /api/v1/config:
+    get:
+      tags: [Operations]
+      summary: Read redacted effective configuration
+      description: Returns an allowlisted configuration projection with no credentials. Requires scope `admin:read`.
+      x-required-scope: admin:read
+      x-requirements: [API-043, CFG-011]
+      responses:
+        '200':
+          description: Redacted effective configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assets, withdrawal, tron, orders, energy, consumers]
+                properties:
+                  assets: {type: array, items: {type: object, additionalProperties: true}}
+                  withdrawal: {type: object, additionalProperties: true}
+                  tron: {type: object, additionalProperties: true}
+                  orders: {type: object, additionalProperties: true}
+                  energy: {type: object, additionalProperties: true}
+                  consumers: {type: array, items: {type: string}}
+
+  /api/v1/reports/volume:
+    get:
+      tags: [Operations]
+      summary: Report order volume
+      description: Groups paid/confirmed received volume over an inclusive UTC range. Requires scope `orders:read`.
+      x-required-scope: orders:read
+      x-requirements: [API-044, DB-002a]
+      parameters:
+        - {name: from, in: query, required: true, schema: {type: integer, format: int64}}
+        - {name: to, in: query, required: true, schema: {type: integer, format: int64}}
+        - {name: group_by, in: query, schema: {type: string, enum: [day, asset, consumer], default: day}}
+      responses:
+        '200':
+          description: Exact-decimal volume buckets; unpriced_paid_count identifies rows excluded from USD totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group_by, from, to, buckets]
+                properties:
+                  group_by: {type: string}
+                  from: {type: integer, format: int64}
+                  to: {type: integer, format: int64}
+                  buckets: {type: array, items: {type: object, additionalProperties: true}}
+
+  /api/v1/reports/fees:
+    get:
+      tags: [Operations]
+      summary: Report withdrawal resource fees
+      description: Returns exact TRX costs for withdrawals created in the inclusive range, by energy and bandwidth source. Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-045]
+      parameters:
+        - {name: from, in: query, required: true, schema: {type: integer, format: int64}}
+        - {name: to, in: query, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '200':
+          description: Fee totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [from, to, energy_by_source_trx, bandwidth_by_source_trx, rental_spend_trx]
+                properties:
+                  from: {type: integer, format: int64}
+                  to: {type: integer, format: int64}
+                  energy_by_source_trx: {type: object, additionalProperties: {type: string}}
+                  bandwidth_by_source_trx: {type: object, additionalProperties: {type: string}}
+                  rental_spend_trx: {type: string}
+
+  /api/v1/export/orders.csv:
+    get:
+      tags: [Operations]
+      summary: Stream orders as CSV
+      description: Streams filtered order rows, default 10000 and maximum 100000. Requires scope `orders:read`.
+      x-required-scope: orders:read
+      x-requirements: [API-046]
+      parameters:
+        - {name: status, in: query, schema: {type: string}}
+        - {name: asset, in: query, schema: {type: string}}
+        - {name: external_ref, in: query, schema: {type: string}}
+        - {name: consumer, in: query, schema: {type: string}}
+        - {name: address, in: query, schema: {type: string}}
+        - {name: created_from, in: query, schema: {type: integer, format: int64}}
+        - {name: created_to, in: query, schema: {type: integer, format: int64}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100000, default: 10000}}
+      responses:
+        '200': {description: Streaming CSV attachment., content: {text/csv: {schema: {type: string}}}}
+
+  /api/v1/export/withdrawals.csv:
+    get:
+      tags: [Operations]
+      summary: Stream withdrawals as CSV
+      description: Streams status-filtered rows, default 10000 and maximum 100000. Requires scope `withdrawals:read`.
+      x-required-scope: withdrawals:read
+      x-requirements: [API-046]
+      parameters:
+        - {name: status, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100000, default: 10000}}
+      responses:
+        '200': {description: Streaming CSV attachment., content: {text/csv: {schema: {type: string}}}}
+
   /api/v1/payments:
     get:
       tags: [Payments]

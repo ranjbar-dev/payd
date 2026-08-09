@@ -55,6 +55,26 @@ type Payment struct {
 // ListOrders provides API-025 keyset pagination; the ULID is the stable cursor.
 func (s *Store) ListOrders(ctx context.Context, filter OrderFilter) ([]Order, error) {
 	query, args := orderSelect+" WHERE 1=1", []any{}
+	query, args = appendOrderFilters(query, args, filter)
+	query += " ORDER BY id LIMIT ?"
+	args = append(args, filter.Limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list orders: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var orders []Order
+	for rows.Next() {
+		order, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
+}
+
+func appendOrderFilters(query string, args []any, filter OrderFilter) (string, []any) {
 	if filter.Status != "" {
 		query, args = query+" AND status = ?", append(args, filter.Status)
 	}
@@ -79,22 +99,27 @@ func (s *Store) ListOrders(ctx context.Context, filter OrderFilter) ([]Order, er
 	if filter.After != "" {
 		query, args = query+" AND id > ?", append(args, filter.After)
 	}
-	query += " ORDER BY id LIMIT ?"
-	args = append(args, filter.Limit)
+	return query, args
+}
+
+func (s *Store) StreamOrders(ctx context.Context, filter OrderFilter, limit int, visit func(Order) error) error {
+	query, args := appendOrderFilters(orderSelect+" WHERE 1=1", nil, filter)
+	query, args = query+" ORDER BY id LIMIT ?", append(args, limit)
 	rows, err := s.normal.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list orders: %w", err)
+		return fmt.Errorf("stream orders: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var orders []Order
 	for rows.Next() {
 		order, err := scanOrder(rows)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		orders = append(orders, order)
+		if err := visit(order); err != nil {
+			return err
+		}
 	}
-	return orders, rows.Err()
+	return rows.Err()
 }
 
 func (s *Store) OrderPayments(ctx context.Context, orderID string) ([]Payment, error) {

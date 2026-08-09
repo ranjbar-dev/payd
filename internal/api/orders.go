@@ -102,27 +102,9 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
 		return
 	}
-	filter := store.OrderFilter{Status: r.URL.Query().Get("status"), Asset: r.URL.Query().Get("asset"),
-		ExternalRef: r.URL.Query().Get("external_ref"), Consumer: r.URL.Query().Get("consumer"),
-		Address: r.URL.Query().Get("address"), After: cursor, Limit: limit + 1}
-	if value := r.URL.Query().Get("created_from"); value != "" {
-		stamp, parseErr := strconv.ParseInt(value, 10, 64)
-		if parseErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid_filter", "created_from must be a Unix timestamp", nil)
-			return
-		}
-		filter.CreatedFrom = &stamp
-	}
-	if value := r.URL.Query().Get("created_to"); value != "" {
-		stamp, parseErr := strconv.ParseInt(value, 10, 64)
-		if parseErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid_filter", "created_to must be a Unix timestamp", nil)
-			return
-		}
-		filter.CreatedTo = &stamp
-	}
-	if filter.CreatedFrom != nil && filter.CreatedTo != nil && *filter.CreatedFrom > *filter.CreatedTo {
-		writeError(w, http.StatusBadRequest, "invalid_filter", "created_from must not exceed created_to", nil)
+	filter, err := orderFilter(r, cursor, limit+1)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_filter", err.Error(), nil)
 		return
 	}
 	orders, err := s.store.ListOrders(r.Context(), filter)
@@ -144,6 +126,30 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 		next = encodeCursor(orders[limit-1].ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": response, "next_cursor": next})
+}
+
+func orderFilter(r *http.Request, after string, limit int) (store.OrderFilter, error) {
+	filter := store.OrderFilter{Status: r.URL.Query().Get("status"), Asset: r.URL.Query().Get("asset"),
+		ExternalRef: r.URL.Query().Get("external_ref"), Consumer: r.URL.Query().Get("consumer"),
+		Address: r.URL.Query().Get("address"), After: after, Limit: limit}
+	if value := r.URL.Query().Get("created_from"); value != "" {
+		stamp, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil {
+			return store.OrderFilter{}, errors.New("created_from must be a Unix timestamp")
+		}
+		filter.CreatedFrom = &stamp
+	}
+	if value := r.URL.Query().Get("created_to"); value != "" {
+		stamp, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil {
+			return store.OrderFilter{}, errors.New("created_to must be a Unix timestamp")
+		}
+		filter.CreatedTo = &stamp
+	}
+	if filter.CreatedFrom != nil && filter.CreatedTo != nil && *filter.CreatedFrom > *filter.CreatedTo {
+		return store.OrderFilter{}, errors.New("created_from must not exceed created_to")
+	}
+	return filter, nil
 }
 
 func (s *Server) extendOrder(w http.ResponseWriter, r *http.Request) {

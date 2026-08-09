@@ -109,6 +109,8 @@ func (Secret) String() string { return "[REDACTED]" }
 
 func (Secret) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
+func (Secret) MarshalJSON() ([]byte, error) { return []byte(`"[REDACTED]"`), nil }
+
 type Energy struct {
 	Enabled        bool          `yaml:"enabled"`
 	Provider       string        `yaml:"provider"`

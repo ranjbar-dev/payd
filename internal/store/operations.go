@@ -27,7 +27,7 @@ func (s *Store) RecordTronGridRequest(ctx context.Context, at time.Time) (int64,
 func (s *Store) TronGridRequestHistory(ctx context.Context, now time.Time) ([]TronGridDailyRequests, error) {
 	today := now.UTC().Truncate(24 * time.Hour)
 	rows, err := s.normal.QueryContext(ctx, `SELECT day_start,requests FROM trongrid_daily_requests
-		WHERE day_start>=? AND day_start<=? ORDER BY day_start`, today.Add(-7*24*time.Hour).Unix(), today.Unix())
+		WHERE day_start>=? AND day_start<=? ORDER BY day_start`, today.Add(-6*24*time.Hour).Unix(), today.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +47,9 @@ type OperationalStatus struct {
 	LastHeight           int64
 	SolidifiedHeight     int64
 	SolidifiedUpdatedAt  int64
+	LastUpdatedAt        int64
+	LastBlockTimestamp   int64
+	ReorgSuspected       bool
 	OldestPriceFetchedAt int64
 	HasPrice             bool
 }
@@ -72,17 +75,104 @@ type OperationalMetrics struct {
 // handle outside internal/store (ARC-005, OPS-001).
 func (s *Store) OperationalStatus(ctx context.Context) (OperationalStatus, error) {
 	var status OperationalStatus
+	var suspected sql.NullInt64
 	if err := s.normal.QueryRowContext(ctx, `SELECT last_height, solidified_height,
-		solidified_updated_at FROM crawler_state WHERE id=1`).
-		Scan(&status.LastHeight, &status.SolidifiedHeight, &status.SolidifiedUpdatedAt); err != nil {
+		solidified_updated_at,updated_at,reorg_suspected_from,
+		COALESCE((SELECT timestamp FROM blocks WHERE height=crawler_state.last_height),0)
+		FROM crawler_state WHERE id=1`).
+		Scan(&status.LastHeight, &status.SolidifiedHeight, &status.SolidifiedUpdatedAt,
+			&status.LastUpdatedAt, &suspected, &status.LastBlockTimestamp); err != nil {
 		return OperationalStatus{}, err
 	}
+	status.ReorgSuspected = suspected.Valid
 	var oldest sql.NullInt64
 	if err := s.normal.QueryRowContext(ctx, "SELECT MIN(fetched_at) FROM prices").Scan(&oldest); err != nil {
 		return OperationalStatus{}, err
 	}
 	status.HasPrice, status.OldestPriceFetchedAt = oldest.Valid, oldest.Int64
 	return status, nil
+}
+
+type WorkerHealth struct {
+	Worker     string
+	LastTickAt *int64
+	LastError  string
+	ErrorCount int64
+	Restarts   int64
+}
+
+func (s *Store) WorkerHealth(ctx context.Context, after string, limit int) ([]WorkerHealth, error) {
+	query, args := `SELECT worker,last_tick_at,COALESCE(last_error,''),error_count,restarts
+		FROM worker_health WHERE 1=1`, []any{}
+	if after != "" {
+		query, args = query+" AND worker>?", append(args, after)
+	}
+	query, args = query+" ORDER BY worker LIMIT ?", append(args, limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var workers []WorkerHealth
+	for rows.Next() {
+		var worker WorkerHealth
+		var lastTick sql.NullInt64
+		if err := rows.Scan(&worker.Worker, &lastTick, &worker.LastError, &worker.ErrorCount, &worker.Restarts); err != nil {
+			return nil, err
+		}
+		if lastTick.Valid {
+			worker.LastTickAt = &lastTick.Int64
+		}
+		workers = append(workers, worker)
+	}
+	return workers, rows.Err()
+}
+
+type AuditFilter struct {
+	Actor, Action, Subject string
+	From, To               *int64
+	Before                 int64
+	Limit                  int
+}
+
+type AuditEntry struct {
+	ID                                 int64
+	Actor, Action, Subject, Detail, IP string
+	CreatedAt                          int64
+}
+
+func (s *Store) ListAudit(ctx context.Context, filter AuditFilter) ([]AuditEntry, error) {
+	query, args := `SELECT id,actor,action,COALESCE(subject,''),COALESCE(detail,''),COALESCE(ip,''),created_at
+		FROM audit_log WHERE 1=1`, []any{}
+	for _, field := range []struct{ column, value string }{{"actor", filter.Actor}, {"action", filter.Action}, {"subject", filter.Subject}} {
+		if field.value != "" {
+			query, args = query+" AND "+field.column+"=?", append(args, field.value)
+		}
+	}
+	if filter.From != nil {
+		query, args = query+" AND created_at>=?", append(args, *filter.From)
+	}
+	if filter.To != nil {
+		query, args = query+" AND created_at<=?", append(args, *filter.To)
+	}
+	if filter.Before > 0 {
+		query, args = query+" AND id<?", append(args, filter.Before)
+	}
+	query, args = query+" ORDER BY id DESC LIMIT ?", append(args, filter.Limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var entries []AuditEntry
+	for rows.Next() {
+		var entry AuditEntry
+		if err := rows.Scan(&entry.ID, &entry.Actor, &entry.Action, &entry.Subject, &entry.Detail, &entry.IP, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }
 
 // Writable opens and rolls back a harmless write transaction. A read-only or
@@ -185,29 +275,53 @@ func (s *Store) fundedAddressCount(ctx context.Context, metrics *OperationalMetr
 }
 
 func (s *Store) energyCostTotals(ctx context.Context, metrics *OperationalMetrics) error {
-	rows, err := s.normal.QueryContext(ctx, `SELECT energy_source, energy_cost_trx FROM withdrawals
-		WHERE energy_source IS NOT NULL AND energy_cost_trx IS NOT NULL`)
+	totals, err := s.EnergyCostTotals(ctx, nil, nil)
 	if err != nil {
 		return err
 	}
+	for source, total := range totals {
+		metrics.EnergyCosts[source] = total
+	}
+	return nil
+}
+
+// EnergyCostTotals exposes the exact source totals used by metrics, optionally over an inclusive creation range (API-045).
+func (s *Store) EnergyCostTotals(ctx context.Context, from, to *int64) (map[string]string, error) {
+	query := `SELECT energy_source,energy_cost_trx FROM withdrawals
+		WHERE energy_source IS NOT NULL AND energy_cost_trx IS NOT NULL`
+	args := []any{}
+	if from != nil {
+		query, args = query+" AND created_at>=?", append(args, *from)
+	}
+	if to != nil {
+		query, args = query+" AND created_at<=?", append(args, *to)
+	}
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
 	defer func() { _ = rows.Close() }()
-	totals := make(map[string]*big.Rat)
+	exact := make(map[string]*big.Rat)
 	for rows.Next() {
 		var source, text string
 		if err := rows.Scan(&source, &text); err != nil {
-			return err
+			return nil, err
 		}
 		value, ok := new(big.Rat).SetString(text)
-		if !ok {
-			return fmt.Errorf("invalid stored energy cost %q", text)
+		if !ok || value.Sign() < 0 {
+			return nil, fmt.Errorf("invalid stored energy cost %q", text)
 		}
-		if totals[source] == nil {
-			totals[source] = new(big.Rat)
+		if exact[source] == nil {
+			exact[source] = new(big.Rat)
 		}
-		totals[source].Add(totals[source], value)
+		exact[source].Add(exact[source], value)
 	}
-	for source, total := range totals {
-		metrics.EnergyCosts[source] = rationalDecimal(total)
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	return rows.Err()
+	totals := make(map[string]string, len(exact))
+	for source, total := range exact {
+		totals[source] = rationalDecimal(total)
+	}
+	return totals, nil
 }

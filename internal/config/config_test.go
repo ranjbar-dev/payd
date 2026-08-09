@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -114,5 +115,9 @@ func TestSecretsRedact(t *testing.T) {
 	}
 	if got := cfg.LogValue().String(); strings.Contains(got, "sensitive") {
 		t.Fatal("config log value exposed a credential")
+	}
+	encoded, err := json.Marshal(cfg.Energy.APIKey)
+	if err != nil || string(encoded) != `"[REDACTED]"` {
+		t.Fatalf("secret JSON = %s, %v", encoded, err)
 	}
 }

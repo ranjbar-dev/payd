@@ -19,6 +19,24 @@ type ResourceGrant struct {
 	BroadcastAttemptedAt, ExpirationAt, ConfirmedAt                    *int64
 }
 
+type ResourceGrantFilter struct {
+	WithdrawalID string
+	Status       string
+	ResourceType string
+	After        string
+	Limit        int
+}
+
+type OutstandingDelegation struct {
+	Count     int64
+	AmountSun string
+}
+
+type ResourceWalletStatus struct {
+	Wallet      WalletAddress
+	Outstanding map[string]OutstandingDelegation
+}
+
 const resourceGrantSelect = `SELECT id,COALESCE(withdrawal_id,''),address_id,COALESCE(receiver_address,''),resource_type,
 	source,amount_sun,COALESCE(txid,''),status,created_at,broadcast_attempted_at,expiration_at,
 	COALESCE(broadcast_response,''),COALESCE(failure_reason,''),lookup_failures,COALESCE(last_lookup_error,''),
@@ -64,6 +82,74 @@ func (s *Store) ResourceGrant(ctx context.Context, id string) (ResourceGrant, er
 		return ResourceGrant{}, ErrAddressNotFound
 	}
 	return grant, err
+}
+
+func (s *Store) ListResourceGrants(ctx context.Context, filter ResourceGrantFilter) ([]ResourceGrant, error) {
+	query, args := resourceGrantSelect+" WHERE 1=1", []any{}
+	for _, field := range []struct{ column, value string }{
+		{"withdrawal_id", filter.WithdrawalID}, {"status", filter.Status}, {"resource_type", filter.ResourceType},
+	} {
+		if field.value != "" {
+			query, args = query+" AND "+field.column+"=?", append(args, field.value)
+		}
+	}
+	if filter.After != "" {
+		query, args = query+" AND id>?", append(args, filter.After)
+	}
+	query, args = query+" ORDER BY id LIMIT ?", append(args, filter.Limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var grants []ResourceGrant
+	for rows.Next() {
+		grant, err := scanResourceGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, grant)
+	}
+	return grants, rows.Err()
+}
+
+func (s *Store) ResourceWalletStatus(ctx context.Context, index uint32) (ResourceWalletStatus, error) {
+	_, address, err := s.ResourceWallet(ctx, index)
+	if err != nil {
+		return ResourceWalletStatus{}, err
+	}
+	wallet, err := s.WalletAddress(ctx, address)
+	if err != nil {
+		return ResourceWalletStatus{}, err
+	}
+	rows, err := s.normal.QueryContext(ctx, `SELECT resource_type,amount_sun FROM resource_grants
+		WHERE source='self_delegated' AND status NOT IN ('failed','expired') ORDER BY resource_type`)
+	if err != nil {
+		return ResourceWalletStatus{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	counts := make(map[string]int64)
+	totals := make(map[string]*big.Int)
+	for rows.Next() {
+		var resourceType, raw string
+		if err := rows.Scan(&resourceType, &raw); err != nil {
+			return ResourceWalletStatus{}, err
+		}
+		amount, ok := new(big.Int).SetString(raw, 10)
+		if !ok || amount.Sign() < 0 {
+			return ResourceWalletStatus{}, fmt.Errorf("invalid resource grant amount %q", raw)
+		}
+		if totals[resourceType] == nil {
+			totals[resourceType] = new(big.Int)
+		}
+		totals[resourceType].Add(totals[resourceType], amount)
+		counts[resourceType]++
+	}
+	outstanding := make(map[string]OutstandingDelegation, len(totals))
+	for resourceType, total := range totals {
+		outstanding[resourceType] = OutstandingDelegation{Count: counts[resourceType], AmountSun: total.String()}
+	}
+	return ResourceWalletStatus{Wallet: wallet, Outstanding: outstanding}, rows.Err()
 }
 
 func (s *Store) ManualResourceGrantCandidates(ctx context.Context) ([]ResourceGrant, error) {

@@ -102,7 +102,8 @@ auth:
   api_keys:
     - name: "local"
       key_hash: "argon2id$v=19$m=65536,t=3,p=2$gLDB9FTfDI2HFA7RYxmhPQ$gPrhc8FEkaQYaMcUp3vSyi9UjDc8v+yKp7vHYVkv3yI" # api key: 45k653AmthF070ei0qzifoGXIPfjyqNXpeXG-UNtAb0
-      scopes: ["orders:write", "orders:read", "wallets:read"]
+      # admin:read grants redacted config and audit-log visibility only.
+      scopes: ["orders:write", "orders:read", "wallets:read", "admin:read"]
   totp_secret: "W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT"  # run ./paydev totp W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT to get the current TOTP code 
 log:
   level: "info"
