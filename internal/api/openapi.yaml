@@ -1,0 +1,830 @@
+openapi: 3.1.0
+info:
+  title: payd HTTP API
+  version: 1.0.0
+  description: |
+    The HTTP API served by payd. Monetary values are decimal strings, never JSON numbers (API-003, DB-001).
+    Authentication is per-key with a general limit of 100 requests per minute and a withdrawal-route
+    limit of 10 requests per minute; exceeding either limit returns HTTP 429 (API-020, API-023).
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - apiKey: []
+tags:
+  - name: Orders
+  - name: Payments
+  - name: Wallets
+  - name: Withdrawals
+  - name: Operations
+  - name: Documentation
+paths:
+  /api/v1/orders:
+    post:
+      tags: [Orders]
+      summary: Create or replay an order
+      description: Requires scope `orders:write`. Implements API-001, API-002, API-003, API-004, API-005, API-006, API-020, and API-024.
+      x-required-scope: orders:write
+      x-error-codes:
+        400: [invalid_request, invalid_order, invalid_amount]
+        401: [unauthorized]
+        409: [external_ref_conflict]
+        429: [rate_limited]
+        500: [internal_error]
+        503: [price_unavailable, address_pool_exhausted]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            example:
+              asset: USDT
+              amount: '1.5'
+              external_ref: smoke-1
+              consumer: local
+              ttl_seconds: 1800
+              metadata: {user_id: 1}
+      responses:
+        '200':
+          description: Exact external_ref replay; the existing order is returned (API-002).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '201':
+          description: A new order was created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+              example:
+                address: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+                amount: '1.5'
+                amount_usd: '1.50'
+                asset: USDT
+                consumer: local
+                created_at: 1786277759
+                expires_at: 1786279559
+                external_ref: smoke-1
+                id: 01KZK772CKH6G9KTEM09TB7AFS
+                metadata: {user_id: 1}
+                overpaid: '0'
+                price_usd: '1.00'
+                received: '0'
+                status: pending
+                updated_at: 1786277759
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409':
+          description: external_ref is already bound to a different request (`external_ref_conflict`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+              example:
+                error:
+                  code: external_ref_conflict
+                  details: {fields: [expected_raw]}
+                  message: external_ref belongs to a different order request
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      tags: [Orders]
+      summary: List orders
+      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      x-required-scope: orders:read
+      x-error-codes:
+        400: [invalid_pagination, invalid_filter]
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: status
+          in: query
+          schema: {type: string}
+        - name: asset
+          in: query
+          schema: {type: string, example: USDT}
+        - name: created_from
+          in: query
+          description: Inclusive lower creation-time bound in Unix seconds.
+          schema: {type: integer, format: int64, example: 1786277000}
+        - name: created_to
+          in: query
+          description: Inclusive upper creation-time bound in Unix seconds.
+          schema: {type: integer, format: int64, example: 1786279000}
+      responses:
+        '200':
+          description: Orders page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/orders/funded-terminal:
+    get:
+      tags: [Orders]
+      summary: List unresolved funded terminal orders
+      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      x-required-scope: orders:read
+      x-error-codes:
+        400: [invalid_pagination]
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Orders page; each order additionally has a `payers` string array.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FundedOrderList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/orders/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/OrderID'}
+    get:
+      tags: [Orders]
+      summary: Get an order and its payments
+      description: Requires scope `orders:read`. Implements API-003, API-020, and API-024.
+      x-required-scope: orders:read
+      x-error-codes:
+        401: [unauthorized]
+        404: [not_found]
+        429: [rate_limited]
+        500: [internal_error]
+      responses:
+        '200':
+          description: Order with attributed payments.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Order'}
+                  - type: object
+                    required: [payments]
+                    properties:
+                      payments:
+                        type: array
+                        items: {$ref: '#/components/schemas/Payment'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/orders/{id}/cancel:
+    parameters:
+      - {$ref: '#/components/parameters/OrderID'}
+    post:
+      tags: [Orders]
+      summary: Cancel an order
+      description: Requires scope `orders:write`. Implements API-003, API-020, and API-024.
+      x-required-scope: orders:write
+      x-error-codes:
+        400: [invalid_request]
+        401: [unauthorized]
+        404: [not_found]
+        409: [order_funded, order_terminal]
+        429: [rate_limited]
+        500: [internal_error]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                force: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Cancelled order.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/orders/{id}/resolve:
+    parameters:
+      - {$ref: '#/components/parameters/OrderID'}
+    post:
+      tags: [Orders]
+      summary: Record resolution of a funded terminal order
+      description: Requires scope `orders:write`. Implements API-020 and API-024.
+      x-required-scope: orders:write
+      x-error-codes:
+        400: [invalid_request, invalid_order]
+        401: [unauthorized]
+        404: [not_found]
+        429: [rate_limited]
+        500: [internal_error]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [resolution]
+              properties:
+                resolution: {type: string, enum: [refunded, written_off, reattributed], example: refunded}
+                resolution_note: {type: string, example: Refunded in transaction abc123}
+      responses:
+        '200':
+          description: Resolution recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resolved]
+                properties: {resolved: {type: boolean, const: true}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/payments/unattributed:
+    get:
+      tags: [Payments]
+      summary: List unattributed payments
+      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      x-required-scope: orders:read
+      x-error-codes:
+        400: [invalid_pagination]
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Payments page.
+          content: {application/json: {schema: {$ref: '#/components/schemas/PaymentList'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/payments/orphaned:
+    get:
+      tags: [Payments]
+      summary: List orphaned payments
+      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      x-required-scope: orders:read
+      x-error-codes:
+        400: [invalid_pagination]
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Payments page.
+          content: {application/json: {schema: {$ref: '#/components/schemas/PaymentList'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/payments/{id}/attribute:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Numeric payment identifier.
+        schema: {type: integer, format: int64, minimum: 1, example: 42}
+    post:
+      tags: [Payments]
+      summary: Attribute a payment to an order
+      description: Requires scope `orders:write`. Implements API-020 and API-024.
+      x-required-scope: orders:write
+      x-error-codes:
+        400: [invalid_payment, invalid_request]
+        401: [unauthorized]
+        404: [not_found]
+        429: [rate_limited]
+        500: [internal_error]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [order_id]
+              properties:
+                order_id: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
+      responses:
+        '200':
+          description: Payment attributed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attributed]
+                properties: {attributed: {type: boolean, const: true}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/needs-resources:
+    get:
+      tags: [Wallets]
+      summary: List wallets needing resources
+      description: Requires scope `wallets:read`. Implements API-003, API-010, API-011, API-012, API-013, API-014, API-020, API-024, and API-025. The current handler returns the complete set and ignores pagination parameters.
+      x-required-scope: wallets:read
+      x-error-codes:
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Resource-needy wallet list.
+          content: {application/json: {schema: {$ref: '#/components/schemas/WalletResourceList'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/{address}/clear-drift:
+    parameters:
+      - name: address
+        in: path
+        required: true
+        schema: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+    post:
+      tags: [Wallets]
+      summary: Clear balance drift after operator review
+      description: Requires scope `wallets:write`. Implements API-020 and API-024; this is the operator action described by BAL-002.
+      x-required-scope: wallets:write
+      x-error-codes:
+        401: [unauthorized]
+        404: [not_found]
+        429: [rate_limited]
+        500: [internal_error]
+      responses:
+        '200':
+          description: Drift flag cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [drift_detected]
+                properties: {drift_detected: {type: boolean, const: false}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/withdrawals:
+    post:
+      tags: [Withdrawals]
+      summary: Create or replay a withdrawal request
+      description: Requires scope `withdrawals:write`. A new request returns 201; an identical Idempotency-Key replay returns the existing row with 200. Implements API-003, API-015, API-020, API-022, API-023, API-024, and API-026.
+      x-required-scope: withdrawals:write
+      x-error-codes:
+        400: [invalid_request, missing_idempotency_key, invalid_asset, invalid_withdrawal, invalid_source]
+        401: [unauthorized, invalid_totp]
+        409: [idempotency_key_reuse, balance_drift, daily_limit_exceeded, insufficient_confirmed_balance]
+        429: [rate_limited]
+        500: [internal_error]
+        503: [withdrawals_disabled, price_unavailable]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Caller-chosen unique withdrawal request key.
+          schema: {type: string, example: w-001}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateWithdrawalRequest'}
+      responses:
+        '200':
+          description: Idempotent replay; the existing withdrawal is returned without consuming TOTP again.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}
+        '201':
+          description: New withdrawal row created.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    get:
+      tags: [Withdrawals]
+      summary: List withdrawals
+      description: Requires scope `withdrawals:read`. Implements API-003, API-020, API-023, API-024, and API-025. The current handler validates `cursor` but does not apply it and returns no next cursor.
+      x-required-scope: withdrawals:read
+      x-error-codes:
+        400: [invalid_pagination]
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: status
+          in: query
+          schema: {type: string, example: requested}
+      responses:
+        '200':
+          description: Withdrawal list. The handler uses the `items` envelope and emits no cursor.
+          content: {application/json: {schema: {$ref: '#/components/schemas/WithdrawalList'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/withdrawals/limits:
+    get:
+      tags: [Withdrawals]
+      summary: Get the UTC-day withdrawal allowance
+      description: Requires scope `withdrawals:read`. Implements API-003, API-016, API-020, API-023, and API-024.
+      x-required-scope: withdrawals:read
+      x-error-codes:
+        401: [unauthorized]
+        429: [rate_limited]
+        500: [internal_error]
+      responses:
+        '200':
+          description: Daily limit usage and remaining allowance.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WithdrawalLimits'}
+              example: {daily_limit_usd: '5000', remaining_usd: '5000', used_usd: '0'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/withdrawals/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, example: 01KZK8B5H1KM6XACMG7MK57J8W}
+    get:
+      tags: [Withdrawals]
+      summary: Get a withdrawal
+      description: Requires scope `withdrawals:read`. Implements API-003, API-017, API-020, API-023, and API-024.
+      x-required-scope: withdrawals:read
+      x-error-codes:
+        401: [unauthorized]
+        404: [not_found]
+        429: [rate_limited]
+        500: [internal_error]
+      responses:
+        '200':
+          description: Withdrawal status and diagnostic detail.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /healthz:
+    get:
+      tags: [Operations]
+      summary: Liveness probe
+      description: Requires no scope. Implements OPS-002.
+      x-required-scope: ''
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+  /readyz:
+    get:
+      tags: [Operations]
+      summary: Readiness probe
+      description: Requires no scope. Implements OPS-001.
+      x-required-scope: ''
+      security: []
+      responses:
+        '200':
+          description: Service is ready.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+        '503':
+          description: Service is degraded. This operational response intentionally uses the readiness shape, not the API error envelope.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+              example: {reasons: [price_stale], status: degraded}
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      description: Requires no scope. Implements the `/metrics` operation defined in REST API §15.4.
+      x-required-scope: ''
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema: {type: string}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /openapi.yaml:
+    get:
+      tags: [Documentation]
+      summary: Download the embedded OpenAPI document
+      description: Requires no scope. Implements TD-007 by serving a dependency-free, embedded API description.
+      x-required-scope: ''
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.1 YAML document.
+          content:
+            application/yaml:
+              schema: {type: string}
+  /docs:
+    get:
+      tags: [Documentation]
+      summary: Open Swagger UI
+      description: Requires no scope. Implements API-020 documentation by exposing the `apiKey` Authorize flow; UI assets load from jsDelivr.
+      x-required-scope: ''
+      security: []
+      responses:
+        '200':
+          description: Swagger UI HTML shell.
+          content:
+            text/html:
+              schema: {type: string}
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key value (not its configured Argon2id key_hash). Implements API-020.
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of rows to return (API-025).
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor returned by the preceding page (API-025).
+      schema: {type: string}
+    OrderID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
+  responses:
+    BadRequest:
+      description: Request validation failed; see the operation's `x-error-codes`.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Unauthorized:
+      description: Authentication, scope, or TOTP validation failed; see `x-error-codes`.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    NotFound:
+      description: The requested resource was not found (`not_found`).
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Conflict:
+      description: Request conflicts with stored state; see the operation's `x-error-codes`.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    RateLimited:
+      description: Per-key rate limit exceeded (`rate_limited`, API-023).
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    InternalError:
+      description: Internal server error (`internal_error`).
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Unavailable:
+      description: Service or required dependency unavailable; see the operation's `x-error-codes`.
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: {type: string, example: insufficient_balance}
+            message: {type: string, example: confirmed balance is insufficient}
+            details: {type: object, additionalProperties: true}
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [asset]
+      oneOf:
+        - required: [amount]
+          not: {required: [amount_usd]}
+        - required: [amount_usd]
+          not: {required: [amount]}
+      properties:
+        asset: {type: string, example: USDT}
+        amount:
+          type: string
+          description: Positive asset amount; mutually exclusive with `amount_usd` (API-001, API-003).
+          example: '1.5'
+        amount_usd:
+          type: string
+          description: Positive USD amount converted at the current price; mutually exclusive with `amount` (API-001, API-003).
+          example: '1.50'
+        external_ref: {type: string, example: smoke-1}
+        consumer: {type: string, description: Defaults to `ipn.default_consumer` when empty., example: local}
+        ttl_seconds: {type: integer, format: int64, minimum: 0, example: 1800}
+        metadata: {description: Arbitrary JSON metadata., example: {user_id: 1}}
+    Order:
+      type: object
+      required: [id, address, asset, amount, received, overpaid, status, consumer, metadata, expires_at, created_at, updated_at]
+      properties:
+        id: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
+        address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+        asset: {type: string, example: USDT}
+        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1.5'}
+        received: {type: string, description: Human-readable attributed amount (API-003)., example: '0'}
+        overpaid: {type: string, description: Human-readable overpayment (API-003)., example: '0'}
+        status: {type: string, example: pending}
+        consumer: {type: string, example: local}
+        metadata: {description: Arbitrary JSON metadata., example: {user_id: 1}}
+        expires_at: {type: integer, format: int64, example: 1786279559}
+        created_at: {type: integer, format: int64, example: 1786277759}
+        updated_at: {type: integer, format: int64, example: 1786277759}
+        external_ref: {type: string, example: smoke-1}
+        price_usd: {type: string, description: Snapshotted USD price (API-003)., example: '1.00'}
+        amount_usd: {type: string, description: Snapshotted order value in USD (API-003)., example: '1.50'}
+        resolution: {type: string, example: refunded}
+        resolution_note: {type: string, example: Refunded manually}
+        resolved_at: {type: integer, format: int64, example: 1786280000}
+    Payment:
+      type: object
+      additionalProperties: false
+      required: [id, txid, log_index, direction, block_height, block_timestamp, from_address, to_address, order_id, asset, amount, status, detected_at, confirmed_at]
+      properties:
+        id: {type: integer, format: int64, example: 42}
+        txid: {type: string, example: a17c9e}
+        log_index: {type: integer, example: 0}
+        direction: {type: string, example: in}
+        block_height: {type: integer, format: int64, example: 71234567}
+        block_timestamp: {type: integer, format: int64, example: 1786277800}
+        from_address: {type: string, example: TPayerAddress}
+        to_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+        order_id: {type: [string, 'null'], example: 01KZK772CKH6G9KTEM09TB7AFS}
+        asset: {type: string, example: USDT}
+        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1.5'}
+        status: {type: string, example: confirmed}
+        detected_at: {type: integer, format: int64, example: 1786277805}
+        confirmed_at: {type: [integer, 'null'], format: int64, example: 1786277900}
+    CreateWithdrawalRequest:
+      type: object
+      additionalProperties: false
+      required: [from_address, to_address, asset, amount, totp]
+      properties:
+        from_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+        to_address: {type: string, example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA}
+        asset: {type: string, example: USDT}
+        amount: {type: string, description: Positive asset amount (API-003)., example: '1.0'}
+        totp:
+          type: string
+          writeOnly: true
+          pattern: '^[0-9]{6}$'
+          description: Single-use TOTP code (API-022). Request bodies containing TOTP codes are never logged (API-026).
+          example: '482910'
+    Withdrawal:
+      type: object
+      additionalProperties: false
+      required: [id, from_address, to_address, asset, amount, amount_raw, amount_usd, status, txid, failure_reason, resolved_by, broadcast_response, fee_raw, network_fee_trx, energy_used, energy_source, energy_cost_trx, bandwidth_source, bandwidth_cost_trx, resource_fee_trx, total_cost_trx, last_lookup_error, created_at, broadcast_at, confirmed_at]
+      properties:
+        id: {type: string, example: 01KZK8B5H1KM6XACMG7MK57J8W}
+        from_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+        to_address: {type: string, example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA}
+        asset: {type: string, example: USDT}
+        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1'}
+        amount_raw: {type: string, description: Base-unit decimal string (DB-001)., example: '1000000'}
+        amount_usd: {type: string, description: USD value as a decimal string (API-003)., example: '1'}
+        status: {type: string, example: requested}
+        txid: {type: string, example: ''}
+        failure_reason: {type: string, example: ''}
+        resolved_by: {type: string, example: ''}
+        broadcast_response: {type: string, example: ''}
+        fee_raw: {type: string, description: SUN amount as a decimal string (DB-001)., example: '0'}
+        network_fee_trx: {type: string, description: TRX fee as a decimal string (API-003)., example: '0'}
+        energy_used: {type: integer, format: int64, example: 0}
+        energy_source: {type: string, example: ''}
+        energy_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
+        bandwidth_source: {type: string, example: ''}
+        bandwidth_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
+        resource_fee_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
+        total_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
+        last_lookup_error: {type: string, example: ''}
+        created_at: {type: integer, format: int64, example: 1786279000}
+        broadcast_at: {type: [integer, 'null'], format: int64}
+        confirmed_at: {type: [integer, 'null'], format: int64}
+    OrderList:
+      type: object
+      additionalProperties: false
+      required: [orders, next_cursor]
+      properties:
+        orders: {type: array, items: {$ref: '#/components/schemas/Order'}}
+        next_cursor: {type: string, example: ''}
+    FundedOrder:
+      allOf:
+        - {$ref: '#/components/schemas/Order'}
+        - type: object
+          required: [payers]
+          properties:
+            payers: {type: array, items: {type: string}}
+    FundedOrderList:
+      type: object
+      additionalProperties: false
+      required: [orders, next_cursor]
+      properties:
+        orders: {type: array, items: {$ref: '#/components/schemas/FundedOrder'}}
+        next_cursor: {type: string, example: ''}
+    PaymentList:
+      type: object
+      additionalProperties: false
+      required: [payments, next_cursor]
+      properties:
+        payments: {type: array, items: {$ref: '#/components/schemas/Payment'}}
+        next_cursor: {type: string, example: ''}
+    WithdrawalList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Withdrawal'}}
+    WithdrawalLimits:
+      type: object
+      additionalProperties: false
+      required: [daily_limit_usd, used_usd, remaining_usd]
+      properties:
+        daily_limit_usd: {type: string, description: USD amount (API-003)., example: '5000'}
+        used_usd: {type: string, description: USD amount (API-003)., example: '0'}
+        remaining_usd: {type: string, description: USD amount (API-003)., example: '5000'}
+    WalletResourceList:
+      type: object
+      additionalProperties: false
+      required: [addresses, total]
+      properties:
+        addresses: {type: array, items: {$ref: '#/components/schemas/WalletResource'} }
+        total: {type: integer, minimum: 0, example: 0}
+    WalletResource:
+      type: object
+      additionalProperties: false
+      required: [address, hd_index, balances, energy, bandwidth, trx_for_bandwidth_burn, can_withdraw, blocked_by, drift_detected]
+      properties:
+        address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
+        hd_index: {type: integer, format: int64, example: 7}
+        balances:
+          type: array
+          items:
+            type: object
+            required: [asset, confirmed, pending, drift_detected]
+            properties:
+              asset: {type: string, example: USDT}
+              confirmed: {type: string, description: Asset amount (API-003, API-014)., example: '142.5'}
+              pending: {type: string, description: Asset amount (API-003, API-014)., example: '0'}
+              usd: {type: string, description: USD amount (API-003)., example: '142.50'}
+              drift_detected: {type: boolean}
+        energy: {$ref: '#/components/schemas/ResourceState'}
+        bandwidth: {$ref: '#/components/schemas/ResourceState'}
+        trx_for_bandwidth_burn: {type: string, description: TRX amount (API-003)., example: '0'}
+        can_withdraw: {type: object, additionalProperties: {type: boolean}, example: {TRX: false, USDT: false}}
+        blocked_by: {type: array, items: {type: string}, example: [bandwidth]}
+        drift_detected: {type: boolean}
+        checked_at: {type: integer, format: int64, example: 1786279400}
+        estimated_burn_trx: {type: string, description: TRX amount (API-003, API-010)., example: '27.51'}
+        energy_fee_sun: {type: integer, format: int64, example: 210}
+    ResourceState:
+      type: object
+      additionalProperties: false
+      required: [available, limit, required, sufficient]
+      properties:
+        available: {type: integer, format: int64, example: 0}
+        limit: {type: integer, format: int64, example: 0}
+        required: {type: integer, format: int64, example: 131000}
+        sufficient: {type: boolean, example: false}
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties: {status: {type: string, const: ok}}
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, degraded]}
+        reasons: {type: array, items: {type: string}, example: [price_stale]}

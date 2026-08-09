@@ -18,6 +18,7 @@ import (
 
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
 	"golang.org/x/crypto/argon2"
+	"gopkg.in/yaml.v3"
 
 	"payd/internal/config"
 	"payd/internal/store"
@@ -29,6 +30,83 @@ const (
 	testAPIKey   = "correct horse battery staple"
 	testTOTP     = "JBSWY3DPEHPK3PXP"
 )
+
+// API-020/API-025: the embedded contract must stay in lockstep with both authenticated and public routes.
+func TestOpenAPIRoutesAndScopesMatchRouteTables(t *testing.T) {
+	type operation struct {
+		Scope       string `yaml:"x-required-scope"`
+		Description string `yaml:"description"`
+	}
+	var document struct {
+		Paths map[string]map[string]yaml.Node `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(openAPIDocument, &document); err != nil {
+		t.Fatalf("parse embedded OpenAPI document: %v", err)
+	}
+
+	want := make(map[string]string, len(apiRoutes)+len(publicRoutes))
+	for _, registered := range append(append([]route(nil), apiRoutes...), publicRoutes...) {
+		key := strings.ToLower(registered.method) + " " + registered.pattern
+		if _, duplicate := want[key]; duplicate {
+			t.Fatalf("duplicate route table entry %s", key)
+		}
+		want[key] = registered.scope
+	}
+
+	got := make(map[string]string, len(want))
+	for path, pathItem := range document.Paths {
+		for method, node := range pathItem {
+			switch strings.ToLower(method) {
+			case "get", "post", "put", "patch", "delete", "head", "options", "trace":
+			default:
+				continue
+			}
+			var documented operation
+			if err := node.Decode(&documented); err != nil {
+				t.Errorf("decode OpenAPI operation %s %s: %v", method, path, err)
+				continue
+			}
+			key := strings.ToLower(method) + " " + path
+			got[key] = documented.Scope
+			wantScope, exists := want[key]
+			if !exists {
+				t.Errorf("OpenAPI operation %s has no route table entry", key)
+				continue
+			}
+			if documented.Scope != wantScope {
+				t.Errorf("OpenAPI operation %s scope = %q, route table = %q", key, documented.Scope, wantScope)
+			}
+			scopeText := "Requires no scope."
+			if wantScope != "" {
+				scopeText = "Requires scope `" + wantScope + "`."
+			}
+			if !strings.Contains(documented.Description, scopeText) {
+				t.Errorf("OpenAPI operation %s description does not declare %q", key, scopeText)
+			}
+		}
+	}
+	for key := range want {
+		if _, exists := got[key]; !exists {
+			t.Errorf("route table entry %s is absent from OpenAPI paths", key)
+		}
+	}
+}
+
+func TestDocumentationRoutesNeedNoAuthentication(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+
+	for target, want := range map[string][2]string{
+		"/openapi.yaml": {"application/yaml", "openapi: 3.1.0"},
+		"/docs":         {"text/html; charset=utf-8", "SwaggerUIBundle"},
+	} {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != want[0] || !strings.Contains(response.Body.String(), want[1]) {
+			t.Fatalf("%s = %d %q %q", target, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
+}
 
 // TST-022 / API-002: a reused external_ref is idempotent only for an exact request match.
 func TestExternalRefMismatchReturnsConflict(t *testing.T) {

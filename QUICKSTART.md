@@ -377,6 +377,35 @@ Rate limits are per key: 100 req/min general, 10 req/min on `/withdrawals`
 
 ---
 
+### Testing routes in Swagger UI
+
+Start the daemon and open <http://127.0.0.1:8080/docs>. Click **Authorize** and
+paste the `X-API-Key` value produced by `./paydev.exe apikey` in §4.4. Use the
+key itself—not the `key_hash` stored in the config.
+
+For an end-to-end check, expand `POST /api/v1/orders`, click **Try it out**,
+paste the T5 request body below, and click **Execute**. Confirm the response is
+**201** and that `amount` is the JSON string `"1.5"`, not the number `1.5`.
+
+`POST /api/v1/withdrawals` additionally requires an `Idempotency-Key` header
+and a fresh code from `./paydev.exe totp <secret>`. Each TOTP is single-use: a
+second Execute with the same code returns 401 `invalid_totp` by design
+(`API-022`), so generate a new code before every attempt.
+
+Swagger UI loads its assets from a CDN and therefore needs internet access.
+The OpenAPI document itself works fully offline and can be saved and imported
+into Postman, Insomnia, or Bruno:
+
+```bash
+curl -s http://127.0.0.1:8080/openapi.yaml -o payd-openapi.yaml
+```
+
+**Warning:** `/docs` and `/openapi.yaml` are unauthenticated; keep
+`server.listen` on `127.0.0.1`, or put payd behind a proxy that blocks these
+paths, consistent with §6.4.
+
+---
+
 ### T3 — The chain follower is actually following
 
 ```bash
@@ -942,7 +971,12 @@ GET    /api/v1/withdrawals                   withdrawals:read
 GET    /api/v1/withdrawals/{id}              withdrawals:read
 GET    /api/v1/withdrawals/limits            withdrawals:read
 GET    /healthz  /readyz  /metrics           (no auth)
+GET    /docs  /openapi.yaml                   (no auth)
 ```
+
+The thirteen missing endpoints above are deliberately absent from the OpenAPI
+document because it describes the routes the code serves, not the larger
+design specification.
 
 ---
 

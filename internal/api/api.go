@@ -8,6 +8,7 @@ import (
 	"crypto/sha1" // RFC 6238 uses HMAC-SHA-1 by default.
 	"crypto/subtle"
 	"database/sql"
+	_ "embed"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
@@ -84,6 +85,57 @@ type requestState struct {
 	scopes  map[string]bool
 }
 
+type route struct {
+	method  string
+	pattern string
+	scope   string
+	handler func(*Server) http.HandlerFunc
+}
+
+var apiRoutes = []route{
+	{http.MethodPost, "/api/v1/orders", "orders:write", func(s *Server) http.HandlerFunc { return s.createOrder }},
+	{http.MethodGet, "/api/v1/orders", "orders:read", func(s *Server) http.HandlerFunc { return s.listOrders }},
+	{http.MethodGet, "/api/v1/orders/funded-terminal", "orders:read", func(s *Server) http.HandlerFunc { return s.listFundedTerminal }},
+	{http.MethodGet, "/api/v1/orders/{id}", "orders:read", func(s *Server) http.HandlerFunc { return s.getOrder }},
+	{http.MethodPost, "/api/v1/orders/{id}/cancel", "orders:write", func(s *Server) http.HandlerFunc { return s.cancelOrder }},
+	{http.MethodPost, "/api/v1/orders/{id}/resolve", "orders:write", func(s *Server) http.HandlerFunc { return s.resolveOrder }},
+	{http.MethodGet, "/api/v1/payments/unattributed", "orders:read", func(s *Server) http.HandlerFunc { return s.listUnattributed }},
+	{http.MethodGet, "/api/v1/payments/orphaned", "orders:read", func(s *Server) http.HandlerFunc { return s.listOrphaned }},
+	{http.MethodPost, "/api/v1/payments/{id}/attribute", "orders:write", func(s *Server) http.HandlerFunc { return s.attributePayment }},
+	{http.MethodGet, "/api/v1/wallets/needs-resources", "wallets:read", func(s *Server) http.HandlerFunc { return s.walletsNeedingResources }},
+	{http.MethodPost, "/api/v1/wallets/{address}/clear-drift", "wallets:write", func(s *Server) http.HandlerFunc { return s.clearBalanceDrift }},
+	{http.MethodPost, "/api/v1/withdrawals", "withdrawals:write", func(s *Server) http.HandlerFunc { return s.createWithdrawal }},
+	{http.MethodGet, "/api/v1/withdrawals", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.listWithdrawals }},
+	{http.MethodGet, "/api/v1/withdrawals/limits", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.withdrawalLimits }},
+	{http.MethodGet, "/api/v1/withdrawals/{id}", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.getWithdrawal }},
+}
+
+var publicRoutes = []route{
+	{http.MethodGet, "/healthz", "", func(s *Server) http.HandlerFunc { return s.health }},
+	{http.MethodGet, "/readyz", "", func(s *Server) http.HandlerFunc { return s.ready }},
+	{http.MethodGet, "/metrics", "", func(s *Server) http.HandlerFunc { return s.serveMetrics }},
+	{http.MethodGet, "/openapi.yaml", "", func(s *Server) http.HandlerFunc { return s.openAPI }},
+	{http.MethodGet, "/docs", "", func(s *Server) http.HandlerFunc { return s.swaggerUI }},
+}
+
+//go:embed openapi.yaml
+var openAPIDocument []byte
+
+const swaggerHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>payd API documentation</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({url:"/openapi.yaml",dom_id:"#swagger-ui",deepLinking:true,persistAuthorization:true});</script>
+</body>
+</html>`
+
 func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger *slog.Logger) (*Server, error) {
 	if database == nil || pool == nil {
 		return nil, errors.New("API requires store and wallet pool")
@@ -113,31 +165,31 @@ func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("POST /api/v1/orders", server.requireScope("orders:write", server.createOrder))
-	mux.Handle("GET /api/v1/orders", server.requireScope("orders:read", server.listOrders))
-	mux.Handle("GET /api/v1/orders/funded-terminal", server.requireScope("orders:read", server.listFundedTerminal))
-	mux.Handle("GET /api/v1/orders/{id}", server.requireScope("orders:read", server.getOrder))
-	mux.Handle("POST /api/v1/orders/{id}/cancel", server.requireScope("orders:write", server.cancelOrder))
-	mux.Handle("POST /api/v1/orders/{id}/resolve", server.requireScope("orders:write", server.resolveOrder))
-	mux.Handle("GET /api/v1/payments/unattributed", server.requireScope("orders:read", server.listUnattributed))
-	mux.Handle("GET /api/v1/payments/orphaned", server.requireScope("orders:read", server.listOrphaned))
-	mux.Handle("POST /api/v1/payments/{id}/attribute", server.requireScope("orders:write", server.attributePayment))
-	mux.Handle("GET /api/v1/wallets/needs-resources", server.requireScope("wallets:read", server.walletsNeedingResources))
-	mux.Handle("POST /api/v1/wallets/{address}/clear-drift", server.requireScope("wallets:write", server.clearBalanceDrift))
-	mux.Handle("POST /api/v1/withdrawals", server.requireScope("withdrawals:write", server.createWithdrawal))
-	mux.Handle("GET /api/v1/withdrawals", server.requireScope("withdrawals:read", server.listWithdrawals))
-	mux.Handle("GET /api/v1/withdrawals/limits", server.requireScope("withdrawals:read", server.withdrawalLimits))
-	mux.Handle("GET /api/v1/withdrawals/{id}", server.requireScope("withdrawals:read", server.getWithdrawal))
+	for _, registered := range apiRoutes {
+		mux.Handle(registered.method+" "+registered.pattern, server.requireScope(registered.scope, registered.handler(server)))
+	}
 	root := http.NewServeMux()
-	root.HandleFunc("GET /readyz", server.ready)
-	root.HandleFunc("GET /healthz", server.health)
-	root.HandleFunc("GET /metrics", server.serveMetrics)
+	// Operational and documentation routes intentionally bypass auth and rate limiting: they expose no secrets,
+	// the API surface is public documentation, and server.listen defaults to 127.0.0.1.
+	for _, registered := range publicRoutes {
+		root.HandleFunc(registered.method+" "+registered.pattern, registered.handler(server))
+	}
 	root.Handle("/", server.authenticate(server.rateLimit(mux)))
 	server.handler = server.logRequests(server.normalizeErrors(root))
 	return server, nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
+
+func (s *Server) openAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(openAPIDocument)
+}
+
+func (s *Server) swaggerUI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, swaggerHTML)
+}
 
 func (s *Server) SetBurnCeilingHealthy(check func() bool) {
 	s.mu.Lock()
