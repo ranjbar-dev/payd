@@ -225,7 +225,9 @@ func (e *Engine) Run(ctx context.Context) {
 		return
 	}
 	for ctx.Err() == nil {
-		if err := e.Tick(ctx); err != nil && ctx.Err() == nil {
+		err := e.Tick(ctx)
+		_ = e.store.RecordWorkerTick(ctx, "withdraw", err, time.Now()) // OPS-008
+		if err != nil && ctx.Err() == nil {
 			e.logger.Error("withdrawal tick", "error", err)
 		}
 		timer := time.NewTimer(tickInterval)

@@ -84,13 +84,17 @@ func (w *Worker) Tick60(ctx context.Context) error {
 }
 
 func (w *Worker) tick10(ctx context.Context) {
-	if err := w.Tick10(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err := w.Tick10(ctx)
+	_ = w.store.RecordWorkerTick(ctx, "lifecycle_10s", err, time.Now()) // OPS-008
+	if err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Error("lifecycle 10s tick failed", "error", err)
 	}
 }
 
 func (w *Worker) tick60(ctx context.Context) {
-	if err := w.Tick60(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err := w.Tick60(ctx)
+	_ = w.store.RecordWorkerTick(ctx, "lifecycle_60s", err, time.Now()) // OPS-008
+	if err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Error("lifecycle 60s tick failed", "error", err)
 	}
 }

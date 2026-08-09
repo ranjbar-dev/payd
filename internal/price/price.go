@@ -149,7 +149,9 @@ func NewWithProvider(cfg config.Price, database *store.Store, provider Provider,
 func (p *Poller) Run(ctx context.Context) {
 	failures := 0
 	for {
-		if err := p.Refresh(ctx); err != nil {
+		err := p.Refresh(ctx)
+		_ = p.store.RecordWorkerTick(ctx, "price", err, time.Now()) // OPS-008
+		if err != nil {
 			failures++
 			p.logger.Error("refresh prices", "error", err, "retry_in", retryDelay(p.interval, failures))
 		} else {

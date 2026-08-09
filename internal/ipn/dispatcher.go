@@ -106,6 +106,10 @@ func (d *Dispatcher) runWorker(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		delivered, err := d.DispatchOne(ctx)
+		// ponytail: every dispatch goroutine reports into the one "ipn" row — the pool is
+		// interchangeable, so liveness is a property of the pool, not of any single worker.
+		// Give them per-goroutine row names only if you ever need to spot one wedged worker.
+		_ = d.store.RecordWorkerTick(ctx, "ipn", err, time.Now()) // OPS-008
 		if err != nil && !errors.Is(err, context.Canceled) {
 			d.logger.Error("dispatch IPN", "error", err)
 		}

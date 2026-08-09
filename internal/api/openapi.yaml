@@ -100,9 +100,9 @@ paths:
     get:
       tags: [Operations]
       summary: List supervised worker health
-      description: Returns persisted heartbeat and error state for every worker. Requires scope `wallets:read`.
+      description: Returns persisted heartbeat and error state for every worker. `last_tick_at` advances every tick, so a stalled worker shows as a growing `seconds_since_tick`; `last_error` is sticky and `error_count` cumulative, so a recovered fault stays visible. Requires scope `wallets:read`.
       x-required-scope: wallets:read
-      x-requirements: [API-039]
+      x-requirements: [API-039, OPS-008]
       parameters:
         - {$ref: '#/components/parameters/Limit'}
         - {$ref: '#/components/parameters/Cursor'}

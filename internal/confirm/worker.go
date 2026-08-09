@@ -61,7 +61,9 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) tickAndReport(ctx context.Context) {
-	if _, err := w.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	_, err := w.Tick(ctx)
+	_ = w.store.RecordWorkerTick(ctx, "confirm", err, time.Now()) // OPS-008
+	if err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Error("confirmation tracker tick failed", "error", err)
 	}
 }

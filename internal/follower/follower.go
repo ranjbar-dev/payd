@@ -124,7 +124,9 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) tickAndReport(ctx context.Context) {
-	if err := w.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	err := w.Tick(ctx)
+	defer func() { _ = w.store.RecordWorkerTick(ctx, "follower", err, time.Now()) }() // OPS-008
+	if err != nil && !errors.Is(err, context.Canceled) {
 		if errors.Is(err, ErrReorgDepthExceeded) {
 			w.logger.Error("CRITICAL: reorg exceeds configured depth; ingest halted", "error", err, "reorg_depth", w.reorgDepth) // CHN-015
 			return

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -99,6 +100,36 @@ type WorkerHealth struct {
 	LastError  string
 	ErrorCount int64
 	Restarts   int64
+}
+
+// RecordWorkerTick is the only writer of worker_health: every worker calls it once per
+// tick so a stalled loop shows as a stale last_tick_at rather than as silence (OPS-008).
+// last_error is sticky — cleared by nothing — so a fault stays visible after the worker
+// recovers; pair it with error_count and last_tick_at to tell "failing now" from "failed once".
+// A cancelled tick is shutdown, not a fault, so it is skipped; the write itself is detached
+// from a cancelled context so the last tick before shutdown still lands.
+func (s *Store) RecordWorkerTick(ctx context.Context, worker string, tickErr error, now time.Time) error {
+	if errors.Is(tickErr, context.Canceled) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
+	message, failures := "", 0
+	if tickErr != nil {
+		message, failures = tickErr.Error(), 1
+		if len(message) > 500 { // Broadcast responses and RPC bodies land here; keep the row bounded.
+			message = message[:500]
+		}
+	}
+	_, err := s.normal.ExecContext(ctx, `INSERT INTO worker_health(worker,last_tick_at,last_error,error_count)
+		VALUES(?,?,NULLIF(?,''),?)
+		ON CONFLICT(worker) DO UPDATE SET
+			last_tick_at=excluded.last_tick_at,
+			last_error=COALESCE(excluded.last_error,worker_health.last_error),
+			error_count=worker_health.error_count+?`,
+		worker, now.UTC().Unix(), message, failures, failures)
+	return err
 }
 
 func (s *Store) WorkerHealth(ctx context.Context, after string, limit int) ([]WorkerHealth, error) {

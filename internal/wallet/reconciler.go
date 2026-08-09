@@ -103,13 +103,17 @@ func (r *Reconciler) Run(ctx context.Context) {
 }
 
 func (r *Reconciler) safetyAndReport(ctx context.Context, includeCooling bool) {
-	if err := r.SafetyNet(ctx, includeCooling); err != nil && ctx.Err() == nil {
+	err := r.SafetyNet(ctx, includeCooling)
+	_ = r.store.RecordWorkerTick(ctx, "reconciler_safety_net", err, time.Now()) // OPS-008
+	if err != nil && ctx.Err() == nil {
 		r.logger.Error("reconcile payment history", "full", includeCooling, "error", err)
 	}
 }
 
 func (r *Reconciler) reconcileAndReport(ctx context.Context) {
-	if err := r.Reconcile(ctx); err != nil && ctx.Err() == nil {
+	err := r.Reconcile(ctx)
+	_ = r.store.RecordWorkerTick(ctx, "reconciler_balances", err, time.Now()) // OPS-008
+	if err != nil && ctx.Err() == nil {
 		r.logger.Error("reconcile chain balances", "error", err)
 	}
 }

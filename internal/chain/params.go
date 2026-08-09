@@ -66,7 +66,9 @@ func (w *ParameterWorker) Run(ctx context.Context) {
 }
 
 func (w *ParameterWorker) refreshAndReport(ctx context.Context) {
-	if err := w.Refresh(ctx); err != nil {
+	err := w.Refresh(ctx)
+	_ = w.store.RecordWorkerTick(ctx, "chain_params", err, time.Now()) // OPS-008
+	if err != nil {
 		w.errorCount.Add(1) // RES-021
 		w.logger.Error("refresh chain parameters", "error", err)
 		if cached, cacheErr := w.store.LoadChainParameters(ctx); cacheErr == nil {
