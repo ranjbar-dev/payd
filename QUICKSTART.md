@@ -727,8 +727,14 @@ TOTP=$(./paydev.exe totp WPFTISLL6W6PT3ULFGOEVSKNU3DZEZG7)
 
 curl -s -X POST $BASE/api/v1/withdrawals \
   -H "X-API-Key: $KEY" -H "Idempotency-Key: w-001" -H "Content-Type: application/json" \
-  -d "{\"from_address\":\"<SOURCE>\",\"to_address\":\"<DEST>\",\"asset\":\"USDT\",\"amount\":\"1.0\",\"totp\":\"$TOTP\"}"
+  -H "X-TOTP: $TOTP" \
+  -d "{\"from_address\":\"<SOURCE>\",\"to_address\":\"<DEST>\",\"asset\":\"USDT\",\"amount\":\"1.0\"}"
 ```
+
+The code goes in `X-TOTP`, never in the body — a body-supplied `totp` is rejected with
+400 `totp_in_body` rather than ignored, so a caller can never believe it sent a second
+factor when it did not. Preflight the same transfer without a code, and without touching
+any state, via `POST /api/v1/withdrawals/estimate`; gate on its `can_proceed` field.
 
 **Negative tests that must all pass — verified results:**
 

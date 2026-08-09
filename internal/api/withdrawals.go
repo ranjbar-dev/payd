@@ -19,7 +19,7 @@ func (s *Server) createWithdrawal(w http.ResponseWriter, r *http.Request) {
 		ToAddress   string `json:"to_address"`
 		Asset       string `json:"asset"`
 		Amount      string `json:"amount"`
-		TOTP        string `json:"totp"`
+		TOTP        string `json:"totp"` // Accepted solely so the retired field can be rejected by name.
 	}
 	if err := decodeJSON(w, r, &request, false); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "request body is invalid", nil)
@@ -28,6 +28,13 @@ func (s *Server) createWithdrawal(w http.ResponseWriter, r *http.Request) {
 	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "missing_idempotency_key", "Idempotency-Key is required", nil)
+		return
+	}
+	// API-022: the code travels in X-TOTP so it never sits in a body that a proxy or client
+	// may log or replay. A body-supplied code is refused rather than ignored — silently
+	// dropping it would let a caller believe it had presented a second factor when it had not.
+	if request.TOTP != "" {
+		writeError(w, http.StatusBadRequest, "totp_in_body", "send the TOTP code in the X-TOTP header, not the request body", nil)
 		return
 	}
 	existing, exists, err := s.store.WithdrawalByIdempotency(r.Context(), key)
@@ -62,7 +69,7 @@ func (s *Server) createWithdrawal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cfg.RequireTOTP {
-		if err := s.ValidateTOTP(r.Context(), request.TOTP, time.Now()); err != nil {
+		if err := s.ValidateTOTP(r.Context(), r.Header.Get("X-TOTP"), time.Now()); err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid_totp", "TOTP is invalid or already used", nil)
 			return
 		}
@@ -221,15 +228,20 @@ func (s *Server) estimateWithdrawal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	balanceSufficient := confirmed.Cmp(required) >= 0
+	// A TRC-20 transfer spends two balances on the source address: the asset itself and the TRX
+	// that pays for energy. They are reported separately because the remedies differ — deposit
+	// more USDT versus top the address up with TRX — and one shared flag sent operators to the
+	// wrong one, telling them the balance was short while the asset balance sat 5x the request.
+	resourceFundsSufficient := true
 	if asset.Kind != "native" && projectedCost.Sign() > 0 {
 		trxBalance, balanceErr := s.store.BalanceForWithdrawal(r.Context(), request.FromAddress, "TRX")
 		if errors.Is(balanceErr, sql.ErrNoRows) {
-			balanceSufficient = false
+			resourceFundsSufficient = false
 		} else if balanceErr != nil {
 			s.writeWithdrawalError(w, balanceErr)
 			return
 		} else if available, valid := new(big.Int).SetString(trxBalance.ConfirmedRaw, 10); !valid || available.Cmp(projectedCost) < 0 {
-			balanceSufficient = false
+			resourceFundsSufficient = false
 		}
 	}
 	quote, err := price.Current(r.Context(), s.store, priceCfg, request.Asset, time.Now())
@@ -265,6 +277,9 @@ func (s *Server) estimateWithdrawal(w http.ResponseWriter, r *http.Request) {
 	if !balanceSufficient {
 		blockedBy = append(blockedBy, "confirmed_balance")
 	}
+	if !resourceFundsSufficient {
+		blockedBy = append(blockedBy, "trx_for_resources")
+	}
 	if dailyCapBlocked {
 		blockedBy = append(blockedBy, "daily_usd_cap")
 	}
@@ -272,7 +287,11 @@ func (s *Server) estimateWithdrawal(w http.ResponseWriter, r *http.Request) {
 		blockedBy = append(blockedBy, resources.BlockedBy)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		// can_proceed is the single field a caller should gate on: the per-condition flags each
+		// answer only their own question, so checking one in isolation misses the others.
+		"can_proceed":                  len(blockedBy) == 0,
 		"confirmed_balance_sufficient": balanceSufficient,
+		"trx_for_resources_sufficient": resourceFundsSufficient,
 		"projected_energy_source":      resources.EnergySource,
 		"projected_trx_cost":           zeroIfEmpty(resources.TRXCost),
 		"daily_cap_blocked":            dailyCapBlocked,

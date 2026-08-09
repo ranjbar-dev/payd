@@ -119,12 +119,11 @@ Base path `/api/v1`. All requests require `X-API-Key`. All responses are JSON.
   "from_address": "TXYZabc...",
   "to_address": "TClientAddr...",
   "asset": "USDT",
-  "amount": "100.00",
-  "totp": "482910"
+  "amount": "100.00"
 }
 ```
 
-Headers: `X-API-Key`, `Idempotency-Key`.
+Headers: `X-API-Key`, `Idempotency-Key`, `X-TOTP`.
 
 | ID | Requirement |
 |---|---|
@@ -163,7 +162,7 @@ specific support or operator-visibility gap without adding a fund-moving retry.
 | API-029 | `POST /orders/{id}/extend` | `orders:write` | MUST accept `ttl_seconds`, reject terminal orders with 409, update `updated_at`, and reject any expiry later than 24 hours after `created_at`, preventing indefinite address retention |
 | API-030 | `GET /orders/{id}/events` | `orders:read` | MUST expose the order's outbox consumer, event type, status, attempts, last response/error, creation, and delivery times with API-025 pagination, making missing-webhook investigations self-service |
 | API-031 | `POST /withdrawals/{id}/resolve` | `withdrawals:write` + TOTP | MUST accept only `{"outcome":"confirmed"\|"failed","failure_reason":"..."}` for `needs_operator` rows, set `resolved_by=operator`, audit actor and IP, preserve `txid`, and never sign, broadcast, retry, or resume; TOTP is supplied in `X-TOTP` so the JSON body remains exactly the decision record (WDR-018, API-015, API-022) |
-| API-032 | `POST /withdrawals/estimate` | `withdrawals:read` | MUST perform zero state writes and require no TOTP while reporting confirmed-balance sufficiency, projected energy source, projected TRX cost from live chain parameters, daily-cap blocking, and `blocked_by`, allowing a safe preflight without moving funds |
+| API-032 | `POST /withdrawals/estimate` | `withdrawals:read` | MUST perform zero state writes and require no TOTP while reporting projected energy source, projected TRX cost from live chain parameters, daily-cap blocking, and `blocked_by`, allowing a safe preflight without moving funds. **Asset-balance and TRX-for-resources sufficiency MUST be reported as separate fields (`confirmed_balance_sufficient`, `trx_for_resources_sufficient`) with distinct `blocked_by` entries**, and a single `can_proceed` MUST summarise them. A TRC-20 transfer spends two balances on the source address and the remedies differ — deposit more of the asset versus top the address up with TRX. Collapsing both into one `confirmed_balance` verdict told operators the balance was short while the asset balance sat well above the request, sending them to top up the wrong one |
 | API-033 | `GET /auth/whoami` | any authenticated | MUST return only the authenticated key name and sorted scopes, letting clients diagnose their own authorization without weakening API-021 |
 | API-034 | `GET /assets` | any authenticated | MUST expose symbol, kind, contract, decimals, minimum deposit, and verified state, preventing clients from hardcoding amount precision |
 | API-035 | `POST /ipn/test` | `orders:write` | MUST send one signed `test.ping` directly to the named configured consumer, return status code and latency, reuse the production signature implementation, and never write an outbox row, allowing webhook validation without fake business events |
@@ -194,7 +193,8 @@ scope is introduced by the Tier C additions.
 | API-020 | Auth MUST be by `X-API-Key` matched against Argon2id hashes in config, with per-key scopes enforced per route |
 | API-021 | Failed auth MUST return 401 with no detail about which part failed |
 | API-022 | TOTP MUST be verified with a ±1 step (30s) window, and each code MUST be single-use — a replay within the window MUST be rejected. **Single-use state MUST be persisted in the `used_totp` table**, not held in memory: an in-memory set reopens the entire replay window on every restart. Validation order is governed by WDR-001a |
+| API-022a | **Every route taking a TOTP MUST read it from the `X-TOTP` header, and MUST reject a code supplied in the request body with 400 `totp_in_body` rather than ignoring it.** One transport for one credential: two accepted forms means an integrator following the wrong example gets a 401 that names the code rather than its placement. Rejecting beats ignoring, because a silently dropped code leaves the caller believing it presented a second factor when it presented none — and on a route that moves funds that belief is the whole control. The rejected request MUST NOT consume the code, so the corrected retry still succeeds |
 | API-023 | Rate limiting MUST be applied per API key: 100 req/min default, 10 req/min on withdrawal routes |
 | API-024 | All errors MUST use a consistent envelope: `{"error": {"code": "insufficient_balance", "message": "...", "details": {}}}` |
 | API-025 | List endpoints MUST use cursor pagination with `limit` (default 50, max 200) and `cursor` |
-| API-026 | Every request MUST be logged with method, path, key name, status, and duration — but never request bodies containing TOTP codes |
+| API-026 | Every request MUST be logged with method, path, key name, status, and duration — never request bodies, and never headers, since API-022a moves TOTP codes into `X-TOTP` |

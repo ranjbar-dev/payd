@@ -259,19 +259,49 @@ func TestWithdrawalIdempotentReplayReturnsOKBeforeTOTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := totpCode(server.totpSecret, time.Now().UTC().Unix()/30)
-	body := fmt.Sprintf(`{"from_address":%q,"to_address":%q,"asset":"USDT","amount":"1","totp":%q}`, source.Address, destination.Address, code)
+	body := fmt.Sprintf(`{"from_address":%q,"to_address":%q,"asset":"USDT","amount":"1"}`, source.Address, destination.Address)
 	call := func() *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/withdrawals", strings.NewReader(body))
 		req.Header.Set("X-API-Key", testAPIKey)
 		req.Header.Set("Idempotency-Key", "retry-one")
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-TOTP", code)
 		server.Handler().ServeHTTP(recorder, req)
 		return recorder
 	}
+	// The replay reuses a code the first call already consumed: WDR-001a requires the
+	// idempotent branch to answer before TOTP is inspected, so this must not 401.
 	first, replay := call(), call()
 	if first.Code != http.StatusCreated || replay.Code != http.StatusOK {
 		t.Fatalf("first=%d %s replay=%d %s", first.Code, first.Body.String(), replay.Code, replay.Body.String())
+	}
+}
+
+// API-022: a code in the request body is refused outright, never quietly ignored — a caller
+// that believes it sent a second factor must not be told the withdrawal simply succeeded.
+func TestWithdrawalRejectsTOTPSuppliedInBody(t *testing.T) {
+	server, database, cleanup := testServer(t, 3)
+	defer cleanup()
+	addresses, err := database.WalletAddresses(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := totpCode(server.totpSecret, time.Now().UTC().Unix()/30)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/withdrawals", strings.NewReader(fmt.Sprintf(
+		`{"from_address":%q,"to_address":%q,"asset":"USDT","amount":"1","totp":%q}`,
+		addresses[0].Address, addresses[1].Address, code)))
+	req.Header.Set("X-API-Key", testAPIKey)
+	req.Header.Set("Idempotency-Key", "totp-in-body")
+	req.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "totp_in_body") {
+		t.Fatalf("body TOTP = %d %s", recorder.Code, recorder.Body.String())
+	}
+	// The rejected request must not have consumed the code, or a correct retry would 401.
+	if err := server.ValidateTOTP(context.Background(), code, time.Now()); err != nil {
+		t.Fatalf("rejected request consumed the TOTP: %v", err)
 	}
 }
 

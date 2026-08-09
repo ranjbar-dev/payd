@@ -453,6 +453,14 @@ paths:
       description: |
         Performs a read-only balance, resource, cost, and daily-cap projection with
         no TOTP and zero state writes. Requires scope `withdrawals:read`.
+
+        **Gate on `can_proceed`.** The per-condition flags each answer only their own
+        question, so checking one alone misses the others. A TRC-20 transfer spends two
+        balances on the source address — the asset itself, and the TRX that pays for
+        energy — and they are reported separately because the remedies differ:
+        `confirmed_balance_sufficient` false means deposit more of the asset, whereas
+        `trx_for_resources_sufficient` false means top the address up with roughly
+        `projected_trx_cost` TRX. `blocked_by` names every failing condition.
       x-required-scope: withdrawals:read
       x-requirements: [API-032, API-010]
       requestBody:
@@ -475,13 +483,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [confirmed_balance_sufficient, projected_energy_source, projected_trx_cost, daily_cap_blocked, blocked_by]
+                required: [can_proceed, confirmed_balance_sufficient, trx_for_resources_sufficient, projected_energy_source, projected_trx_cost, daily_cap_blocked, blocked_by]
                 properties:
-                  confirmed_balance_sufficient: {type: boolean}
+                  can_proceed: {type: boolean, description: True only when no condition is blocking; the field callers should gate on.}
+                  confirmed_balance_sufficient: {type: boolean, description: Whether the source holds enough of the asset being sent. Ignores resource costs.}
+                  trx_for_resources_sufficient: {type: boolean, description: Whether the source holds enough TRX to pay projected_trx_cost. Always true for native TRX transfers and when no cost is projected.}
                   projected_energy_source: {type: string, enum: [existing, rented, self_delegated, burned, '']}
                   projected_trx_cost: {$ref: '#/components/schemas/Amount'}
                   daily_cap_blocked: {type: boolean}
-                  blocked_by: {type: array, items: {type: string}}
+                  blocked_by: {type: array, items: {type: string, enum: [withdrawals_disabled, confirmed_balance, trx_for_resources, daily_usd_cap, energy_unavailable, energy_burn_limit, chain_parameters_unavailable]}}
 
   /api/v1/auth/whoami:
     get:
@@ -1455,12 +1465,13 @@ paths:
           fresh key for a genuinely different transfer.
         - New key: 201 with the newly created withdrawal.
 
-        **TOTP.** When required by configuration, `totp` must be a 6-digit code from the
-        configured authenticator secret. Codes are accepted within one 30-second step
+        **TOTP.** When required by configuration, send a 6-digit code from the configured
+        authenticator secret in the **`X-TOTP` header** — never in the request body, which
+        is rejected with 400 `totp_in_body`. Codes are accepted within one 30-second step
         either side of the current one, and each code is consumed once — its use is stored
         in the database, so a restart does not make it reusable. Any failure (bad code,
-        already used, no secret configured) is 401 `invalid_totp`. Request bodies are
-        never written to the logs, so codes do not leak there.
+        already used, no secret configured) is 401 `invalid_totp`. Neither headers nor
+        bodies are written to the logs, so codes do not leak there.
 
         **Checks, in the order they are applied.** Withdrawals disabled in configuration:
         503 `withdrawals_disabled`. Unknown asset: 400 `invalid_asset`. Malformed
@@ -1485,7 +1496,7 @@ paths:
       x-required-scope: withdrawals:write
       x-requirements: [API-003, API-015, API-020, API-022, API-023, API-024, API-026, WDR-001a]
       x-error-codes:
-        400: [invalid_request, missing_idempotency_key, invalid_asset, invalid_withdrawal, invalid_source]
+        400: [invalid_request, missing_idempotency_key, totp_in_body, invalid_asset, invalid_withdrawal, invalid_source]
         401: [unauthorized, invalid_totp]
         409: [idempotency_key_reuse, balance_drift, daily_limit_exceeded, insufficient_confirmed_balance]
         429: [rate_limited]
@@ -1500,6 +1511,15 @@ paths:
             when retrying a request whose response you did not receive; use a new one for
             every genuinely new transfer.
           schema: {type: string, example: w-001}
+        - name: X-TOTP
+          in: header
+          required: false
+          description: >-
+            Six-digit authenticator code, required when `withdrawal.require_totp` is set.
+            Sent as a header so the code never enters a request body that a proxy or client
+            might log or replay. A code placed in the body instead is rejected with 400
+            `totp_in_body`.
+          schema: {type: string, pattern: '^[0-9]{6}$', example: '482910'}
       requestBody:
         required: true
         content:
@@ -2149,7 +2169,7 @@ components:
     CreateWithdrawalRequest:
       type: object
       additionalProperties: false
-      required: [from_address, to_address, asset, amount, totp]
+      required: [from_address, to_address, asset, amount]
       properties:
         from_address:
           type: string
@@ -2174,16 +2194,13 @@ components:
           example: '1.0'
         totp:
           type: string
+          deprecated: true
           writeOnly: true
-          pattern: '^[0-9]{6}$'
           description: >-
-            Six-digit code from the configured authenticator, when withdrawals are set to
-            require one. Accepted within one 30-second step either side of the current
-            code, and each code works once — its use is stored, so restarting the service
-            does not make it reusable. Retrying with the same `Idempotency-Key` does not
-            need a new code. Request bodies are never written to the logs, so codes do not
-            leak there.
-          example: '482910'
+            **Removed — send the code in the `X-TOTP` header instead.** A request carrying
+            this field is rejected with 400 `totp_in_body` rather than being accepted with
+            the field ignored, so a caller cannot believe it presented a second factor when
+            it did not. The rejected request does not consume the code.
     Withdrawal:
       type: object
       additionalProperties: false
