@@ -10,10 +10,26 @@ import (
 type OrderFilter struct {
 	Status      string
 	Asset       string
+	ExternalRef string
+	Consumer    string
+	Address     string
 	CreatedFrom *int64
 	CreatedTo   *int64
 	After       string
 	Limit       int
+}
+
+type PaymentFilter struct {
+	TxID      string
+	Address   string
+	OrderID   string
+	Status    string
+	Direction string
+	Asset     string
+	From      *int64
+	To        *int64
+	After     int64
+	Limit     int
 }
 
 type Payment struct {
@@ -44,6 +60,15 @@ func (s *Store) ListOrders(ctx context.Context, filter OrderFilter) ([]Order, er
 	}
 	if filter.Asset != "" {
 		query, args = query+" AND asset = ?", append(args, filter.Asset)
+	}
+	if filter.ExternalRef != "" {
+		query, args = query+" AND external_ref = ?", append(args, filter.ExternalRef)
+	}
+	if filter.Consumer != "" {
+		query, args = query+" AND consumer = ?", append(args, filter.Consumer)
+	}
+	if filter.Address != "" {
+		query, args = query+" AND address = ?", append(args, filter.Address)
 	}
 	if filter.CreatedFrom != nil {
 		query, args = query+" AND created_at >= ?", append(args, *filter.CreatedFrom)
@@ -82,6 +107,34 @@ func (s *Store) AddressPayments(ctx context.Context, addressID int64) ([]Payment
 
 func (s *Store) ListPayments(ctx context.Context, status string, after int64, limit int) ([]Payment, error) {
 	return s.listPayments(ctx, "status = ?", []any{status}, after, limit)
+}
+
+func (s *Store) ListPaymentsFiltered(ctx context.Context, filter PaymentFilter) ([]Payment, error) {
+	where, args := "1=1", []any{}
+	add := func(column, value string) {
+		if value != "" {
+			where += " AND " + column + " = ?"
+			args = append(args, value)
+		}
+	}
+	add("txid", filter.TxID)
+	if filter.Address != "" {
+		where += " AND (from_address = ? OR to_address = ?)"
+		args = append(args, filter.Address, filter.Address)
+	}
+	add("order_id", filter.OrderID)
+	add("status", filter.Status)
+	add("direction", filter.Direction)
+	add("asset", filter.Asset)
+	if filter.From != nil {
+		where += " AND block_timestamp >= ?"
+		args = append(args, *filter.From)
+	}
+	if filter.To != nil {
+		where += " AND block_timestamp <= ?"
+		args = append(args, *filter.To)
+	}
+	return s.listPayments(ctx, where, args, filter.After, filter.Limit)
 }
 
 func (s *Store) listPayments(ctx context.Context, where string, args []any, after int64, limit int) ([]Payment, error) {

@@ -86,6 +86,35 @@ func TestEnergyFallbackChainFailsCleanly(t *testing.T) {
 	}
 }
 
+func TestEstimateResourcesUsesLiveEnergyFeeWithoutMovingFunds(t *testing.T) {
+	ctx := context.Background()
+	engine, database, signer, reader, broadcast, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	cfg := engine.config
+	cfg.Resources.MinEnergy = 100
+	cfg.Energy = config.Energy{FallbackToBurn: true, MaxBurnTRX: "10", PollTimeout: time.Minute}
+	engine.UpdateConfig(cfg)
+	reader.resources = json.RawMessage(`{"EnergyLimit":0,"TotalEnergyLimit":1000000,"TotalEnergyWeight":1000000,"NetLimit":1000}`)
+	reader.delegatable = json.RawMessage(`{"max_size":0}`)
+	if _, err := database.UpsertChainParameters(ctx, 420, 100, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	estimate, err := engine.EstimateResources(ctx, "receiver", "trc20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.EnergySource != "burned" || estimate.TRXCost != "0.042" || estimate.BlockedBy != "" {
+		t.Fatalf("estimate = %#v", estimate)
+	}
+	if signer.calls != 0 || broadcast.calls != 0 || reader.delegationCalls != 0 {
+		t.Fatalf("estimate moved funds: signs=%d broadcasts=%d delegations=%d", signer.calls, broadcast.calls, reader.delegationCalls)
+	}
+	native, err := engine.EstimateResources(ctx, "receiver", "native")
+	if err != nil || native.EnergySource != "existing" || native.TRXCost != "0" {
+		t.Fatalf("native estimate = %#v err=%v", native, err)
+	}
+}
+
 func TestRentedEnergyPollsAtConfiguredIntervalAndAuditsArrival(t *testing.T) {
 	ctx := context.Background()
 	engine, database, _, reader, broadcast, cleanup := withdrawalFixture(t)

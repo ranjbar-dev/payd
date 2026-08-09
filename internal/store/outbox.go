@@ -41,6 +41,13 @@ type DeadIPN struct {
 	CreatedAt                                   int64
 }
 
+type OrderEvent struct {
+	ID, Consumer, EventType, Status, LastError string
+	Attempts, LastStatusCode                   int
+	CreatedAt                                  int64
+	DeliveredAt                                *int64
+}
+
 type EventConfig struct {
 	DefaultConsumer string
 	Consumers       map[string]EventConsumer
@@ -88,6 +95,35 @@ func (s *Store) ListDeadIPN(ctx context.Context, consumer, after string, limit i
 		if err := rows.Scan(&event.ID, &event.OrderID, &event.Consumer, &event.EventType, &event.Attempts,
 			&event.LastError, &event.LastStatusCode, &event.CreatedAt); err != nil {
 			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) ListOrderEvents(ctx context.Context, orderID, after string, limit int) ([]OrderEvent, error) {
+	query := `SELECT id,consumer,event_type,status,attempts,COALESCE(last_status_code,0),
+		COALESCE(last_error,''),created_at,delivered_at FROM ipn_outbox WHERE order_id=?`
+	args := []any{orderID}
+	if after != "" {
+		query, args = query+" AND id>?", append(args, after)
+	}
+	query, args = query+" ORDER BY id LIMIT ?", append(args, limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list order events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var events []OrderEvent
+	for rows.Next() {
+		var event OrderEvent
+		var delivered sql.NullInt64
+		if err := rows.Scan(&event.ID, &event.Consumer, &event.EventType, &event.Status, &event.Attempts,
+			&event.LastStatusCode, &event.LastError, &event.CreatedAt, &delivered); err != nil {
+			return nil, err
+		}
+		if delivered.Valid {
+			event.DeliveredAt = &delivered.Int64
 		}
 		events = append(events, event)
 	}
@@ -233,6 +269,65 @@ func (s *Store) RetryIPN(ctx context.Context, id string, now time.Time) (bool, e
 		s.notifyOutbox()
 	}
 	return changed == 1, err
+}
+
+// ReplayDeadIPN resets at most limit matching rows. A dry run performs no write (API-036).
+func (s *Store) ReplayDeadIPN(ctx context.Context, consumer string, from, to *int64, limit int, dryRun bool, now time.Time) (int, error) {
+	where, args := "status='dead'", []any{}
+	if consumer != "" {
+		where, args = where+" AND consumer=?", append(args, consumer)
+	}
+	if from != nil {
+		where, args = where+" AND created_at>=?", append(args, *from)
+	}
+	if to != nil {
+		where, args = where+" AND created_at<=?", append(args, *to)
+	}
+	queryArgs := append(append([]any{}, args...), limit)
+	rows, err := s.normal.QueryContext(ctx, "SELECT id FROM ipn_outbox WHERE "+where+" ORDER BY id LIMIT ?", queryArgs...)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if dryRun || len(ids) == 0 {
+		return len(ids), nil
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	changed := 0
+	for _, id := range ids {
+		result, err := tx.ExecContext(ctx, `UPDATE ipn_outbox SET status='pending',attempts=0,next_attempt_at=?,
+			last_error=NULL,last_status_code=NULL,delivered_at=NULL WHERE id=? AND status='dead'`, now.UTC().Unix(), id)
+		if err != nil {
+			return 0, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		changed += int(count)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if changed > 0 {
+		s.notifyOutbox()
+	}
+	return changed, nil
 }
 
 // IPNCurrentStatus reads only the mutable status field added at send time (IPN-021a).

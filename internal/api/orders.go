@@ -102,7 +102,9 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
 		return
 	}
-	filter := store.OrderFilter{Status: r.URL.Query().Get("status"), Asset: r.URL.Query().Get("asset"), After: cursor, Limit: limit + 1}
+	filter := store.OrderFilter{Status: r.URL.Query().Get("status"), Asset: r.URL.Query().Get("asset"),
+		ExternalRef: r.URL.Query().Get("external_ref"), Consumer: r.URL.Query().Get("consumer"),
+		Address: r.URL.Query().Get("address"), After: cursor, Limit: limit + 1}
 	if value := r.URL.Query().Get("created_from"); value != "" {
 		stamp, parseErr := strconv.ParseInt(value, 10, 64)
 		if parseErr != nil {
@@ -142,6 +144,56 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 		next = encodeCursor(orders[limit-1].ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": response, "next_cursor": next})
+}
+
+func (s *Server) extendOrder(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		TTLSeconds int64 `json:"ttl_seconds"`
+	}
+	if err := decodeJSON(w, r, &request, false); err != nil || request.TTLSeconds <= 0 ||
+		request.TTLSeconds > int64((time.Duration(1<<63-1))/time.Second) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "ttl_seconds must be positive", nil)
+		return
+	}
+	order, err := s.store.ExtendOrder(r.Context(), r.PathValue("id"), time.Duration(request.TTLSeconds)*time.Second, 24*time.Hour, time.Now())
+	if err != nil {
+		s.writeOrderError(w, err)
+		return
+	}
+	response, err := s.orderJSON(order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) orderEvents(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.store.Order(r.Context(), r.PathValue("id")); err != nil {
+		s.writeOrderError(w, err)
+		return
+	}
+	limit, cursor, err := pagination(r, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
+		return
+	}
+	events, err := s.store.ListOrderEvents(r.Context(), r.PathValue("id"), cursor, limit+1)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	items := make([]map[string]any, 0, min(len(events), limit))
+	for _, event := range events[:min(len(events), limit)] {
+		items = append(items, map[string]any{"id": event.ID, "consumer": event.Consumer, "event_type": event.EventType,
+			"status": event.Status, "attempts": event.Attempts, "last_status_code": event.LastStatusCode,
+			"last_error": event.LastError, "created_at": event.CreatedAt, "delivered_at": event.DeliveredAt})
+	}
+	next := ""
+	if len(events) > limit {
+		next = encodeCursor(events[limit-1].ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": items, "next_cursor": next})
 }
 
 func (s *Server) cancelOrder(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +351,8 @@ func (s *Server) writeOrderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "order_funded", "funded order cancellation requires force", nil)
 	case errors.Is(err, store.ErrOrderTerminal):
 		writeError(w, http.StatusConflict, "order_terminal", "order is already terminal", nil)
+	case errors.Is(err, store.ErrOrderLifetime):
+		writeError(w, http.StatusConflict, "order_lifetime_exceeded", "order cannot exceed 24 hours from creation", nil)
 	case errors.Is(err, store.ErrOrderNotFound), errors.Is(err, store.ErrPaymentNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "order or payment was not found", nil)
 	default:

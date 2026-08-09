@@ -39,6 +39,12 @@ type Status struct {
 	State, ActualTRX, DelegationTxID string
 }
 
+type ResourceEstimate struct {
+	EnergySource string
+	TRXCost      string
+	BlockedBy    string
+}
+
 // BurnCostSun is the live tier-3 formula: required energy × getEnergyFee (ENR-016).
 func BurnCostSun(energyRequired, energyFee int64) *big.Int {
 	return new(big.Int).Mul(big.NewInt(energyRequired), big.NewInt(energyFee))

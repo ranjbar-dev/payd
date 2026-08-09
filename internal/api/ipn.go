@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"payd/internal/config"
+	ipndelivery "payd/internal/ipn"
 )
 
 func (s *Server) listDeadIPN(w http.ResponseWriter, r *http.Request) {
@@ -93,4 +94,58 @@ func (s *Server) listIPNConsumers(w http.ResponseWriter, r *http.Request) {
 		next = encodeCursor(consumers[end-1].Name)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"consumers": items, "next_cursor": next})
+}
+
+func (s *Server) testIPN(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Consumer string `json:"consumer"`
+	}
+	if err := decodeJSON(w, r, &request, false); err != nil || request.Consumer == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "consumer is required", nil)
+		return
+	}
+	s.mu.RLock()
+	timeout := s.ipn.Timeout
+	consumers := append([]config.Consumer(nil), s.ipn.Consumers...)
+	s.mu.RUnlock()
+	for _, consumer := range consumers {
+		if consumer.Name != request.Consumer {
+			continue
+		}
+		status, latency, err := ipndelivery.SendTest(r.Context(), consumer, timeout, time.Now())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "delivery_failed", "test webhook delivery failed", map[string]any{
+				"status_code": status, "latency_ms": latency.Milliseconds(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status_code": status, "latency_ms": latency.Milliseconds()})
+		return
+	}
+	writeError(w, http.StatusBadRequest, "unknown_consumer", "consumer is not configured", nil)
+}
+
+func (s *Server) replayIPN(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Consumer string `json:"consumer"`
+		From     *int64 `json:"from"`
+		To       *int64 `json:"to"`
+		DryRun   *bool  `json:"dry_run"`
+	}
+	if err := decodeJSON(w, r, &request, false); err != nil ||
+		(request.From != nil && request.To != nil && *request.From > *request.To) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body or time range is invalid", nil)
+		return
+	}
+	dryRun := true
+	if request.DryRun != nil {
+		dryRun = *request.DryRun
+	}
+	const batchLimit = 200
+	count, err := s.store.ReplayDeadIPN(r.Context(), request.Consumer, request.From, request.To, batchLimit, dryRun, time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": count})
 }

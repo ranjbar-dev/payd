@@ -16,6 +16,7 @@ var (
 	ErrDailyLimit         = errors.New("withdrawal daily limit exceeded")
 	ErrInsufficientFunds  = errors.New("insufficient confirmed balance")
 	ErrSourceUnavailable  = errors.New("withdrawal source is not available")
+	ErrWithdrawalState    = errors.New("withdrawal is not awaiting operator resolution")
 )
 
 type Withdrawal struct {
@@ -85,6 +86,50 @@ func (s *Store) Withdrawal(ctx context.Context, id string) (Withdrawal, error) {
 		return Withdrawal{}, ErrWithdrawalNotFound
 	}
 	return w, err
+}
+
+// ResolveWithdrawal records an operator's terminal decision only; it never mutates txid or broadcast fields (API-031, WDR-018).
+func (s *Store) ResolveWithdrawal(ctx context.Context, id, outcome, reason, actor, ip string, now time.Time) (Withdrawal, error) {
+	if outcome != "confirmed" && outcome != "failed" {
+		return Withdrawal{}, ErrWithdrawalState
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE withdrawals SET status=?,failure_reason=?,resolved_by='operator',
+		status_updated_at=?,confirmed_at=CASE WHEN ?='confirmed' THEN ? ELSE confirmed_at END
+		WHERE id=? AND status='needs_operator'`, outcome, reason, now.UTC().Unix(), outcome, now.UTC().Unix(), id)
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	if changed != 1 {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM withdrawals WHERE id=?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return Withdrawal{}, ErrWithdrawalNotFound
+		} else if err != nil {
+			return Withdrawal{}, err
+		}
+		return Withdrawal{}, ErrWithdrawalState
+	}
+	detail, _ := json.Marshal(map[string]string{"outcome": outcome, "failure_reason": reason})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log(actor,action,subject,detail,ip,created_at)
+		VALUES (?,'withdrawal.resolved',?,?,?,?)`, actor, id, string(detail), ip, now.UTC().Unix()); err != nil {
+		return Withdrawal{}, err
+	}
+	w, err := scanWithdrawal(tx.QueryRowContext(ctx, withdrawalSelect+" WHERE w.id=?", id))
+	if err != nil {
+		return Withdrawal{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Withdrawal{}, err
+	}
+	return w, nil
 }
 
 // CreateWithdrawal enforces WDR-002a/005/006/006a in one serialized write transaction.

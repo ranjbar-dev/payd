@@ -16,6 +16,49 @@ func (s *Server) listOrphaned(w http.ResponseWriter, r *http.Request) {
 	s.listPayments(w, r, "orphaned")
 }
 
+func (s *Server) listAllPayments(w http.ResponseWriter, r *http.Request) {
+	limit, cursor, err := pagination(r, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
+		return
+	}
+	after := int64(0)
+	if cursor != "" {
+		after, err = strconv.ParseInt(cursor, 10, 64)
+		if err != nil || after < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_pagination", "cursor is invalid", nil)
+			return
+		}
+	}
+	query := r.URL.Query()
+	filter := store.PaymentFilter{TxID: query.Get("txid"), Address: query.Get("address"), OrderID: query.Get("order_id"),
+		Status: query.Get("status"), Direction: query.Get("direction"), Asset: query.Get("asset"), After: after, Limit: limit + 1}
+	for name, target := range map[string]**int64{"from": &filter.From, "to": &filter.To} {
+		if value := query.Get(name); value != "" {
+			stamp, parseErr := strconv.ParseInt(value, 10, 64)
+			if parseErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid_filter", name+" must be a Unix timestamp", nil)
+				return
+			}
+			*target = &stamp
+		}
+	}
+	if filter.From != nil && filter.To != nil && *filter.From > *filter.To {
+		writeError(w, http.StatusBadRequest, "invalid_filter", "from must not exceed to", nil)
+		return
+	}
+	payments, err := s.store.ListPaymentsFiltered(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	next := ""
+	if len(payments) > limit {
+		next = encodeCursor(strconv.FormatInt(payments[limit-1].ID, 10))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"payments": s.paymentJSON(payments[:min(len(payments), limit)]), "next_cursor": next})
+}
+
 func (s *Server) listPayments(w http.ResponseWriter, r *http.Request, status string) {
 	limit, cursor, err := pagination(r, true)
 	if err != nil {

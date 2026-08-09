@@ -44,6 +44,280 @@ tags:
   - name: Operations
   - name: Documentation
 paths:
+  /api/v1/payments:
+    get:
+      tags: [Payments]
+      summary: Search payments
+      description: |
+        Searches detected payments by transaction, address, order, status, direction,
+        asset, and block timestamp. Requires scope `orders:read`.
+      x-required-scope: orders:read
+      x-requirements: [API-027]
+      parameters:
+        - {name: txid, in: query, schema: {type: string}}
+        - {name: address, in: query, schema: {type: string}}
+        - {name: order_id, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: direction, in: query, schema: {type: string, enum: [in, out]}}
+        - {name: asset, in: query, schema: {type: string}}
+        - {name: from, in: query, schema: {type: integer, format: int64}}
+        - {name: to, in: query, schema: {type: integer, format: int64}}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Matching payment page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payments, next_cursor]
+                properties:
+                  payments: {type: array, items: {$ref: '#/components/schemas/Payment'}}
+                  next_cursor: {type: string}
+
+  /api/v1/orders/{id}/extend:
+    post:
+      tags: [Orders]
+      summary: Extend an order
+      description: |
+        Adds time to a non-terminal order without allowing its total lifetime to
+        exceed 24 hours from creation. Requires scope `orders:write`.
+      x-required-scope: orders:write
+      x-requirements: [API-029]
+      parameters:
+        - {$ref: '#/components/parameters/OrderID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_seconds]
+              additionalProperties: false
+              properties:
+                ttl_seconds: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200': {description: Extended order., content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/orders/{id}/events:
+    get:
+      tags: [Orders]
+      summary: List order webhook events
+      description: |
+        Lists delivery state for the order's immutable outbox events. Requires scope `orders:read`.
+      x-required-scope: orders:read
+      x-requirements: [API-030]
+      parameters:
+        - {$ref: '#/components/parameters/OrderID'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Event page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, next_cursor]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, consumer, event_type, status, attempts, last_status_code, last_error, created_at]
+                      properties:
+                        id: {type: string}
+                        consumer: {type: string}
+                        event_type: {type: string}
+                        status: {type: string}
+                        attempts: {type: integer}
+                        last_status_code: {type: integer}
+                        last_error: {type: string}
+                        created_at: {type: integer, format: int64}
+                        delivered_at: {type: [integer, 'null'], format: int64}
+                  next_cursor: {type: string}
+
+  /api/v1/withdrawals/{id}/resolve:
+    post:
+      tags: [Withdrawals]
+      summary: Record an operator resolution
+      description: |
+        Records a terminal human decision for a needs_operator row. It never signs,
+        broadcasts, retries, or changes txid. Requires scope `withdrawals:write`.
+      x-required-scope: withdrawals:write
+      x-requirements: [API-031, API-015, API-022, WDR-018]
+      parameters:
+        - {$ref: '#/components/parameters/WithdrawalID'}
+        - name: X-TOTP
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[0-9]{6}$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, failure_reason]
+              additionalProperties: false
+              properties:
+                outcome: {type: string, enum: [confirmed, failed]}
+                failure_reason: {type: string}
+      responses:
+        '200': {description: Resolved withdrawal., content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/withdrawals/estimate:
+    post:
+      tags: [Withdrawals]
+      summary: Estimate a withdrawal
+      description: |
+        Performs a read-only balance, resource, cost, and daily-cap projection with
+        no TOTP and zero state writes. Requires scope `withdrawals:read`.
+      x-required-scope: withdrawals:read
+      x-requirements: [API-032, API-010]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_address, to_address, asset, amount]
+              additionalProperties: false
+              properties:
+                from_address: {type: string}
+                to_address: {type: string}
+                asset: {type: string}
+                amount: {$ref: '#/components/schemas/Amount'}
+      responses:
+        '200':
+          description: Read-only projection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed_balance_sufficient, projected_energy_source, projected_trx_cost, daily_cap_blocked, blocked_by]
+                properties:
+                  confirmed_balance_sufficient: {type: boolean}
+                  projected_energy_source: {type: string, enum: [existing, rented, self_delegated, burned, '']}
+                  projected_trx_cost: {$ref: '#/components/schemas/Amount'}
+                  daily_cap_blocked: {type: boolean}
+                  blocked_by: {type: array, items: {type: string}}
+
+  /api/v1/auth/whoami:
+    get:
+      tags: [Operations]
+      summary: Describe the authenticated key
+      description: |
+        Returns the authenticated key name and scopes. Requires no scope.
+      x-requirements: [API-033]
+      responses:
+        '200':
+          description: Authenticated key identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key_name, scopes]
+                properties:
+                  key_name: {type: string}
+                  scopes: {type: array, items: {type: string}}
+
+  /api/v1/assets:
+    get:
+      tags: [Operations]
+      summary: List configured assets
+      description: |
+        Lists public asset metadata used for exact client-side amount conversion. Requires no scope.
+      x-requirements: [API-034]
+      responses:
+        '200':
+          description: Configured assets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assets]
+                properties:
+                  assets:
+                    type: array
+                    items:
+                      type: object
+                      required: [symbol, kind, contract, decimals, min_deposit, verified]
+                      properties:
+                        symbol: {type: string}
+                        kind: {type: string}
+                        contract: {type: string}
+                        decimals: {type: integer}
+                        min_deposit: {$ref: '#/components/schemas/Amount'}
+                        verified: {type: boolean}
+
+  /api/v1/ipn/test:
+    post:
+      tags: [IPN]
+      summary: Send a test webhook
+      description: |
+        Sends one signed test.ping directly to a configured consumer without writing
+        to the outbox. Requires scope `orders:write`.
+      x-required-scope: orders:write
+      x-requirements: [API-035, IPN-006, IPN-007]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consumer]
+              additionalProperties: false
+              properties:
+                consumer: {type: string}
+      responses:
+        '200':
+          description: Test delivery result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status_code, latency_ms]
+                properties:
+                  status_code: {type: integer}
+                  latency_ms: {type: integer, format: int64}
+
+  /api/v1/ipn/replay:
+    post:
+      tags: [IPN]
+      summary: Replay dead webhooks in bulk
+      description: |
+        Counts or resets up to 200 matching dead events. dry_run defaults to true.
+        Requires scope `orders:write`.
+      x-required-scope: orders:write
+      x-requirements: [API-036]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                consumer: {type: string}
+                from: {type: integer, format: int64}
+                to: {type: integer, format: int64}
+                dry_run: {type: boolean, default: true}
+      responses:
+        '200':
+          description: Number of matching or replayed events, capped at 200.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: {type: integer, maximum: 200}
+
   /api/v1/orders:
     post:
       tags: [Orders]
@@ -185,6 +459,15 @@ paths:
         - name: asset
           in: query
           schema: {type: string, example: USDT}
+        - name: external_ref
+          in: query
+          schema: {type: string}
+        - name: consumer
+          in: query
+          schema: {type: string}
+        - name: address
+          in: query
+          schema: {type: string}
         - name: created_from
           in: query
           description: Inclusive lower creation-time bound in Unix seconds.
@@ -1269,6 +1552,11 @@ components:
       in: path
       required: true
       schema: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
+    WithdrawalID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
   responses:
     BadRequest:
       description: >-
@@ -1318,6 +1606,10 @@ components:
         These are transient states worth retrying later, unlike a 400 or a 409.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
+    Amount:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+      description: Exact non-negative decimal amount represented as a string.
     Error:
       type: object
       additionalProperties: false

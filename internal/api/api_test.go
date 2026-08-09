@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"payd/internal/config"
+	"payd/internal/energy"
 	"payd/internal/store"
 	walletpool "payd/internal/wallet"
 )
@@ -424,6 +427,7 @@ type fakeResourceDelegator struct {
 	amount                           int64
 	err                              error
 	providerBalance                  string
+	estimate                         energy.ResourceEstimate
 }
 
 func (f *fakeResourceDelegator) DelegateResources(_ context.Context, address, resourceType string, amount int64, actor, ip string) (store.ResourceGrant, error) {
@@ -436,6 +440,16 @@ func (f *fakeResourceDelegator) DelegateResources(_ context.Context, address, re
 
 func (f *fakeResourceDelegator) ProviderBalanceMetric() (string, bool) {
 	return f.providerBalance, false
+}
+
+func (f *fakeResourceDelegator) EstimateResources(context.Context, string, string) (energy.ResourceEstimate, error) {
+	if f.err != nil {
+		return energy.ResourceEstimate{}, f.err
+	}
+	if f.estimate.EnergySource == "" && f.estimate.BlockedBy == "" {
+		return energy.ResourceEstimate{EnergySource: "existing", TRXCost: "0"}, nil
+	}
+	return f.estimate, nil
 }
 
 func TestTierANewRoutesRequireAuthenticationAndScopes(t *testing.T) {
@@ -714,6 +728,354 @@ func TestLargeMoneyFormattingRoundTripsWithoutPrecisionLoss(t *testing.T) {
 	}
 }
 
+func TestB1PaymentSearchAndB2OrderFilters(t *testing.T) {
+	server, database, cleanup := testServer(t, 3)
+	defer cleanup()
+	firstResponse := request(t, server.Handler(), http.MethodPost, "/api/v1/orders",
+		`{"asset":"USDT","amount":"1","external_ref":"invoice-search","consumer":"shop"}`)
+	secondResponse := request(t, server.Handler(), http.MethodPost, "/api/v1/orders",
+		`{"asset":"USDT","amount":"2","external_ref":"invoice-other","consumer":"analytics"}`)
+	if firstResponse.Code != http.StatusCreated || secondResponse.Code != http.StatusCreated {
+		t.Fatalf("create orders = %d/%d", firstResponse.Code, secondResponse.Code)
+	}
+	var first, second map[string]any
+	decodeResponse(t, firstResponse, &first)
+	decodeResponse(t, secondResponse, &second)
+	firstOrder, err := database.Order(context.Background(), first["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, secondID := firstOrder.ID, second["id"].(string)
+	addressID, orderID := firstOrder.AddressID, firstOrder.ID
+	if err := database.CommitBlock(context.Background(), store.BlockRecord{Height: 1, ID: "search-block", ParentID: "genesis", Timestamp: 200}, 64,
+		func(write *store.BlockWrite) error {
+			for _, payment := range []store.PaymentRecord{
+				{TxID: "customer-tx", LogIndex: 0, Direction: "in", BlockHeight: 1, BlockID: "search-block", BlockTimestamp: 150,
+					FromAddress: "TPayerSearch", ToAddress: firstOrder.Address, AddressID: &addressID, OrderID: &orderID,
+					Asset: "USDT", AmountRaw: "1000000", Status: "confirmed", DetectedAt: 151},
+				{TxID: "other-tx", LogIndex: 0, Direction: "out", BlockHeight: 1, BlockID: "search-block", BlockTimestamp: 250,
+					FromAddress: firstOrder.Address, ToAddress: "TOther", AddressID: &addressID,
+					Asset: "USDT", AmountRaw: "2", Status: "seen", DetectedAt: 251},
+			} {
+				if _, err := write.UpsertPayment(payment); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+
+	search := fmt.Sprintf("/api/v1/payments?txid=customer-tx&address=%s&order_id=%s&status=confirmed&direction=in&asset=USDT&from=100&to=200",
+		firstOrder.Address, firstOrder.ID)
+	matched := request(t, server.Handler(), http.MethodGet, search, "")
+	if matched.Code != http.StatusOK || !strings.Contains(matched.Body.String(), `"txid":"customer-tx"`) || strings.Contains(matched.Body.String(), `"txid":"other-tx"`) {
+		t.Fatalf("payment search = %d %s", matched.Code, matched.Body.String())
+	}
+	var page struct {
+		Payments   []map[string]any `json:"payments"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	firstPage := request(t, server.Handler(), http.MethodGet, "/api/v1/payments?limit=1", "")
+	decodeResponse(t, firstPage, &page)
+	if len(page.Payments) != 1 || page.NextCursor == "" {
+		t.Fatalf("payment first page = %#v", page)
+	}
+	secondPage := request(t, server.Handler(), http.MethodGet, "/api/v1/payments?limit=1&cursor="+page.NextCursor, "")
+	decodeResponse(t, secondPage, &page)
+	if len(page.Payments) != 1 {
+		t.Fatalf("payment second page = %#v", page)
+	}
+	if invalid := request(t, server.Handler(), http.MethodGet, "/api/v1/payments?limit=0", ""); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("payment invalid limit = %d %s", invalid.Code, invalid.Body.String())
+	}
+
+	orders := request(t, server.Handler(), http.MethodGet,
+		"/api/v1/orders?external_ref=invoice-search&consumer=shop&address="+firstOrder.Address, "")
+	if orders.Code != http.StatusOK || !strings.Contains(orders.Body.String(), firstID) || strings.Contains(orders.Body.String(), secondID) {
+		t.Fatalf("order filters = %d %s", orders.Code, orders.Body.String())
+	}
+}
+
+func TestB3OrderExtensionCapAndB4EventPagination(t *testing.T) {
+	server, database, cleanup := testServer(t, 2)
+	defer cleanup()
+	created := request(t, server.Handler(), http.MethodPost, "/api/v1/orders",
+		`{"asset":"USDT","amount":"1","external_ref":"extend-events"}`)
+	var body map[string]any
+	decodeResponse(t, created, &body)
+	id := body["id"].(string)
+	extended := request(t, server.Handler(), http.MethodPost, "/api/v1/orders/"+id+"/extend", `{"ttl_seconds":3600}`)
+	if extended.Code != http.StatusOK || !strings.Contains(extended.Body.String(), `"updated_at"`) {
+		t.Fatalf("extend = %d %s", extended.Code, extended.Body.String())
+	}
+	overCap := request(t, server.Handler(), http.MethodPost, "/api/v1/orders/"+id+"/extend", `{"ttl_seconds":86400}`)
+	if overCap.Code != http.StatusConflict || !strings.Contains(overCap.Body.String(), "order_lifetime_exceeded") {
+		t.Fatalf("over-cap extend = %d %s", overCap.Code, overCap.Body.String())
+	}
+	events := store.NewEventConfig(testConfig(2).IPN, testConfig(2).Assets)
+	if err := database.CommitBlock(context.Background(), store.BlockRecord{Height: 1, ID: "event-block", ParentID: "genesis", Timestamp: 1}, 64,
+		func(write *store.BlockWrite) error {
+			if err := write.EnqueueOrderEvent(events, id, "order.test-one", map[string]any{"order_id": id}, time.Unix(10, 0)); err != nil {
+				return err
+			}
+			return write.EnqueueOrderEvent(events, id, "order.test-two", map[string]any{"order_id": id}, time.Unix(11, 0))
+		}); err != nil {
+		t.Fatal(err)
+	}
+	var page struct {
+		Events     []map[string]any `json:"events"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	firstPage := request(t, server.Handler(), http.MethodGet, "/api/v1/orders/"+id+"/events?limit=1", "")
+	decodeResponse(t, firstPage, &page)
+	if len(page.Events) != 1 || page.NextCursor == "" || page.Events[0]["consumer"] != "shop" {
+		t.Fatalf("event first page = %#v", page)
+	}
+	secondPage := request(t, server.Handler(), http.MethodGet, "/api/v1/orders/"+id+"/events?limit=1&cursor="+page.NextCursor, "")
+	decodeResponse(t, secondPage, &page)
+	if len(page.Events) != 1 || page.Events[0]["event_type"] != "order.test-two" {
+		t.Fatalf("event second page = %#v", page)
+	}
+	if invalid := request(t, server.Handler(), http.MethodGet, "/api/v1/orders/"+id+"/events?limit=201", ""); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("event invalid limit = %d %s", invalid.Code, invalid.Body.String())
+	}
+	if cancelled := request(t, server.Handler(), http.MethodPost, "/api/v1/orders/"+id+"/cancel", `{}`); cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel = %d %s", cancelled.Code, cancelled.Body.String())
+	}
+	terminal := request(t, server.Handler(), http.MethodPost, "/api/v1/orders/"+id+"/extend", `{"ttl_seconds":1}`)
+	if terminal.Code != http.StatusConflict || !strings.Contains(terminal.Body.String(), "order_terminal") {
+		t.Fatalf("terminal extend = %d %s", terminal.Code, terminal.Body.String())
+	}
+}
+
+func TestB5OperatorResolutionPreservesTxIDAndTOTPReplay(t *testing.T) {
+	server, database, path, cleanup := testServerWithPath(t, 3)
+	defer cleanup()
+	addresses := fundTestWallets(t, database, 2)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	resolvedCandidate, _, err := database.CreateWithdrawal(ctx, store.CreateWithdrawal{IdempotencyKey: "resolve-one",
+		FromAddress: addresses[0].Address, ToAddress: addresses[2].Address, Asset: "USDT", AmountRaw: "1",
+		AmountUSD: "1", DailyLimitUSD: "1000", RequestedBy: "test", IP: "127.0.0.1", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := database.ClaimWithdrawal(ctx, resolvedCandidate.ID); err != nil || !claimed {
+		t.Fatalf("claim withdrawal: claimed=%v err=%v", claimed, err)
+	}
+	if changed, err := database.SetWithdrawalResourceState(ctx, resolvedCandidate.ID, "awaiting_resources", "signing", "existing", "existing"); err != nil || !changed {
+		t.Fatalf("set signing: changed=%v err=%v", changed, err)
+	}
+	if err := database.PersistWithdrawalAttempt(ctx, resolvedCandidate.ID, "immutable-txid", now, now.Add(time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.WithdrawalNeedsOperator(ctx, resolvedCandidate.ID, "ambiguous", now,
+		store.NewEventConfig(testConfig(3).IPN, testConfig(3).Assets)); err != nil {
+		t.Fatal(err)
+	}
+	nonCandidate, _, err := database.CreateWithdrawal(ctx, store.CreateWithdrawal{IdempotencyKey: "resolve-two",
+		FromAddress: addresses[1].Address, ToAddress: addresses[2].Address, Asset: "USDT", AmountRaw: "1",
+		AmountUSD: "1", DailyLimitUSD: "1000", RequestedBy: "test", IP: "127.0.0.1", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(id, code, body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/withdrawals/"+id+"/resolve", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", testAPIKey)
+		req.Header.Set("X-TOTP", code)
+		server.Handler().ServeHTTP(recorder, req)
+		return recorder
+	}
+	step := time.Now().UTC().Unix() / 30
+	code := totpCode(server.totpSecret, step)
+	resolved := call(resolvedCandidate.ID, code, `{"outcome":"confirmed","failure_reason":"chain verified manually"}`)
+	if resolved.Code != http.StatusOK {
+		t.Fatalf("resolve = %d %s", resolved.Code, resolved.Body.String())
+	}
+	stored, err := database.Withdrawal(ctx, resolvedCandidate.ID)
+	if err != nil || stored.Status != "confirmed" || stored.TxID != "immutable-txid" || stored.ResolvedBy != "operator" {
+		t.Fatalf("resolved withdrawal = %#v err=%v", stored, err)
+	}
+	replay := call(resolvedCandidate.ID, code, `{"outcome":"failed","failure_reason":"replay"}`)
+	if replay.Code != http.StatusUnauthorized || !strings.Contains(replay.Body.String(), "invalid_totp") {
+		t.Fatalf("TOTP replay = %d %s", replay.Code, replay.Body.String())
+	}
+	wrongState := call(nonCandidate.ID, totpCode(server.totpSecret, step-1), `{"outcome":"failed","failure_reason":"operator rejected"}`)
+	if wrongState.Code != http.StatusConflict {
+		t.Fatalf("non-needs_operator = %d %s", wrongState.Code, wrongState.Body.String())
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	var audits int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='withdrawal.resolved' AND actor='test' AND ip<>''`).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("resolution audits=%d err=%v", audits, err)
+	}
+	// Server has no signer or broadcaster dependency; retaining txid verifies the fund-moving path is unreachable here.
+}
+
+func TestB6EstimatePerformsZeroStateWrites(t *testing.T) {
+	server, database, path, cleanup := testServerWithPath(t, 2)
+	defer cleanup()
+	addresses := fundTestWallets(t, database, 1)
+	server.SetDelegator(&fakeResourceDelegator{estimate: energy.ResourceEstimate{EnergySource: "burned", TRXCost: "2.75"}})
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	before := snapshotRowCounts(t, raw)
+	response := request(t, server.Handler(), http.MethodPost, "/api/v1/withdrawals/estimate", fmt.Sprintf(
+		`{"from_address":%q,"to_address":%q,"asset":"USDT","amount":"0.5"}`, addresses[0].Address, addresses[1].Address))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"projected_energy_source":"burned"`) ||
+		!strings.Contains(response.Body.String(), `"projected_trx_cost":"2.75"`) {
+		t.Fatalf("estimate = %d %s", response.Code, response.Body.String())
+	}
+	after := snapshotRowCounts(t, raw)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("estimate changed row counts: before=%v after=%v", before, after)
+	}
+}
+
+func TestB7WhoamiAndB8AssetsAllowAnyAuthenticatedKey(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	for _, target := range []string{"/api/v1/auth/whoami", "/api/v1/assets"} {
+		missing := httptest.NewRecorder()
+		server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, target, nil))
+		if missing.Code != http.StatusUnauthorized {
+			t.Fatalf("%s missing auth = %d", target, missing.Code)
+		}
+		response := requestWithKey(t, server.Handler(), http.MethodGet, target, "", testNoScopeAPIKey)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s unscoped auth = %d %s", target, response.Code, response.Body.String())
+		}
+	}
+	who := requestWithKey(t, server.Handler(), http.MethodGet, "/api/v1/auth/whoami", "", testNoScopeAPIKey)
+	if !strings.Contains(who.Body.String(), `"key_name":"unscoped"`) || !strings.Contains(who.Body.String(), `"scopes":[]`) {
+		t.Fatalf("whoami = %s", who.Body.String())
+	}
+	assets := request(t, server.Handler(), http.MethodGet, "/api/v1/assets", "")
+	if !strings.Contains(assets.Body.String(), `"decimals":6`) || !strings.Contains(assets.Body.String(), `"verified":true`) {
+		t.Fatalf("assets = %s", assets.Body.String())
+	}
+}
+
+func TestB9SignedTestIPNBypassesOutbox(t *testing.T) {
+	var received bool
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = r.Header.Get("X-Signature") != "" && r.Header.Get("X-Timestamp") != "" &&
+			r.Header.Get("X-Consumer") == "shop" && strings.Contains(string(body), `"event_type":"test.ping"`)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer sink.Close()
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	cfg := testConfig(1)
+	cfg.IPN.Timeout = time.Second
+	cfg.IPN.Consumers[0].URL = sink.URL
+	server.UpdateConfig(cfg)
+	before, err := database.OutboxCount(context.Background(), "test.ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/test", `{"consumer":"shop"}`)
+	after, err := database.OutboxCount(context.Background(), "test.ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || !received || before != after {
+		t.Fatalf("test IPN = %d received=%v outbox=%d/%d body=%s", response.Code, received, before, after, response.Body.String())
+	}
+}
+
+func TestB10ReplayDefaultsToDryRun(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	id := createDeadIPN(t, database, testConfig(1), "bulk-default")
+	dry := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/replay", `{"consumer":"shop"}`)
+	status, found, err := database.IPNStatus(context.Background(), id)
+	if dry.Code != http.StatusOK || err != nil || !found || status != "dead" || !strings.Contains(dry.Body.String(), `"count":1`) {
+		t.Fatalf("default dry replay = %d status=%q found=%v err=%v body=%s", dry.Code, status, found, err, dry.Body.String())
+	}
+	live := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/replay", `{"consumer":"shop","dry_run":false}`)
+	status, found, err = database.IPNStatus(context.Background(), id)
+	if live.Code != http.StatusOK || err != nil || !found || status != "pending" {
+		t.Fatalf("live replay = %d status=%q found=%v err=%v body=%s", live.Code, status, found, err, live.Body.String())
+	}
+}
+
+func TestTierBRouteAuthenticationAndScopes(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	routes := []struct {
+		method, path string
+		unscopedOK   bool
+	}{
+		{http.MethodGet, "/api/v1/payments", false},
+		{http.MethodGet, "/api/v1/orders?external_ref=x", false},
+		{http.MethodPost, "/api/v1/orders/x/extend", false},
+		{http.MethodGet, "/api/v1/orders/x/events", false},
+		{http.MethodPost, "/api/v1/withdrawals/x/resolve", false},
+		{http.MethodPost, "/api/v1/withdrawals/estimate", false},
+		{http.MethodGet, "/api/v1/auth/whoami", true},
+		{http.MethodGet, "/api/v1/assets", true},
+		{http.MethodPost, "/api/v1/ipn/test", false},
+		{http.MethodPost, "/api/v1/ipn/replay", false},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			missing := httptest.NewRecorder()
+			server.Handler().ServeHTTP(missing, httptest.NewRequest(route.method, route.path, nil))
+			if missing.Code != http.StatusUnauthorized {
+				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
+			}
+			unscoped := requestWithKey(t, server.Handler(), route.method, route.path, "", testNoScopeAPIKey)
+			if route.unscopedOK && unscoped.Code == http.StatusUnauthorized {
+				t.Fatalf("unscoped authenticated key rejected: %s", unscoped.Body.String())
+			}
+			if !route.unscopedOK && unscoped.Code != http.StatusUnauthorized {
+				t.Fatalf("missing scope = %d %s", unscoped.Code, unscoped.Body.String())
+			}
+		})
+	}
+}
+
+func snapshotRowCounts(t *testing.T, database *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := database.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int64, len(tables))
+	for _, table := range tables {
+		var count int64
+		if err := database.QueryRow(`SELECT COUNT(*) FROM "` + strings.ReplaceAll(table, `"`, `""`) + `"`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		counts[table] = count
+	}
+	return counts
+}
+
 func fundTestWallets(t *testing.T, database *store.Store, count int) []store.WalletAddress {
 	t.Helper()
 	ctx := context.Background()
@@ -757,8 +1119,14 @@ func createDeadIPN(t *testing.T, database *store.Store, cfg config.Config, marke
 }
 
 func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
+	server, database, _, cleanup := testServerWithPath(t, poolSize)
+	return server, database, cleanup
+}
+
+func testServerWithPath(t *testing.T, poolSize int) (*Server, *store.Store, string, func()) {
 	t.Helper()
-	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
+	path := filepath.Join(t.TempDir(), "payd.db")
+	database, err := store.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +1146,7 @@ func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server, database, func() { hd.Destroy(); _ = database.Close() }
+	return server, database, path, func() { hd.Destroy(); _ = database.Close() }
 }
 
 func testConfig(poolSize int) config.Config {

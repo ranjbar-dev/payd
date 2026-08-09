@@ -18,6 +18,7 @@ var (
 	ErrOrderNotFound       = errors.New("order not found")
 	ErrOrderRequiresForce  = errors.New("order cancellation requires force")
 	ErrOrderTerminal       = errors.New("order is terminal")
+	ErrOrderLifetime       = errors.New("order lifetime exceeds maximum")
 	ErrInvalidResolution   = errors.New("invalid order resolution")
 	ErrPaymentNotFound     = errors.New("payment not found")
 )
@@ -326,6 +327,55 @@ func (s *Store) Order(ctx context.Context, id string) (Order, error) {
 		return Order{}, ErrOrderNotFound
 	}
 	return order, err
+}
+
+// ExtendOrder implements API-029 with a hard lifetime measured from created_at.
+func (s *Store) ExtendOrder(ctx context.Context, id string, ttl, maxLifetime time.Duration, now time.Time) (Order, error) {
+	if ttl <= 0 || maxLifetime <= 0 {
+		return Order{}, ErrOrderLifetime
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return Order{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	order, err := scanOrder(tx.QueryRowContext(ctx, orderSelect+" WHERE id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Order{}, ErrOrderNotFound
+	}
+	if err != nil {
+		return Order{}, err
+	}
+	switch order.Status {
+	case "confirmed", "expired", "expired_funded", "cancelled", "cancelled_funded":
+		return Order{}, ErrOrderTerminal
+	}
+	seconds := int64(ttl / time.Second)
+	if seconds <= 0 || order.ExpiresAt > int64(^uint64(0)>>1)-seconds {
+		return Order{}, ErrOrderLifetime
+	}
+	expiresAt := order.ExpiresAt + seconds
+	maximum := order.CreatedAt + int64(maxLifetime/time.Second)
+	if expiresAt > maximum {
+		return Order{}, ErrOrderLifetime
+	}
+	updatedAt := now.UTC().Unix()
+	result, err := tx.ExecContext(ctx, `UPDATE orders SET expires_at=?,updated_at=? WHERE id=? AND updated_at=?`, expiresAt, updatedAt, id, order.UpdatedAt)
+	if err != nil {
+		return Order{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		if err != nil {
+			return Order{}, err
+		}
+		return Order{}, errors.New("order changed concurrently")
+	}
+	order.ExpiresAt, order.UpdatedAt = expiresAt, updatedAt
+	if err := tx.Commit(); err != nil {
+		return Order{}, err
+	}
+	return order, nil
 }
 
 // CancelOrder enforces force for funded/non-pending states and preserves funded terminal orders (ORD-005a/011, POOL-004).

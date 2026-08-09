@@ -140,6 +140,146 @@ func (s *Server) withdrawalLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"daily_limit_usd": limit, "used_usd": decimalRat(used), "remaining_usd": decimalRat(remaining)})
 }
 
+func (s *Server) resolveWithdrawal(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Outcome       string `json:"outcome"`
+		FailureReason string `json:"failure_reason"`
+	}
+	if err := decodeJSON(w, r, &request, false); err != nil ||
+		(request.Outcome != "confirmed" && request.Outcome != "failed") ||
+		(request.Outcome == "failed" && request.FailureReason == "") {
+		writeError(w, http.StatusBadRequest, "invalid_request", "outcome must be confirmed or failed; failed requires failure_reason", nil)
+		return
+	}
+	if err := s.ValidateTOTP(r.Context(), r.Header.Get("X-TOTP"), time.Now()); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_totp", "TOTP is invalid or already used", nil)
+		return
+	}
+	state := requestStateFrom(r.Context())
+	resolved, err := s.store.ResolveWithdrawal(r.Context(), r.PathValue("id"), request.Outcome, request.FailureReason,
+		state.keyName, r.RemoteAddr, time.Now())
+	if err != nil {
+		s.writeWithdrawalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.withdrawalJSON(resolved))
+}
+
+func (s *Server) estimateWithdrawal(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		FromAddress string `json:"from_address"`
+		ToAddress   string `json:"to_address"`
+		Asset       string `json:"asset"`
+		Amount      string `json:"amount"`
+	}
+	if err := decodeJSON(w, r, &request, false); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body is invalid", nil)
+		return
+	}
+	decimals, configured := s.assetDecimals(request.Asset)
+	raw, parseErr := store.ParseUnits(request.Amount, decimals)
+	if !configured || parseErr != nil || raw == nil || raw.Sign() <= 0 ||
+		!hdwallet.IsValidAddress(hdwallet.TRX, request.ToAddress) {
+		writeError(w, http.StatusBadRequest, "invalid_withdrawal", "configured asset, destination, and positive amount are required", nil)
+		return
+	}
+	balance, err := s.store.BalanceForWithdrawal(r.Context(), request.FromAddress, request.Asset)
+	if err != nil {
+		s.writeWithdrawalError(w, err)
+		return
+	}
+	s.mu.RLock()
+	delegator, withdrawalCfg, priceCfg := s.delegator, s.withdrawal, s.price
+	asset := s.assets[request.Asset]
+	s.mu.RUnlock()
+	if delegator == nil {
+		writeError(w, http.StatusServiceUnavailable, "estimator_unavailable", "resource estimator is unavailable", nil)
+		return
+	}
+	resources, err := delegator.EstimateResources(r.Context(), request.FromAddress, asset.Kind)
+	if err != nil {
+		s.logger.Error("estimate withdrawal resources", "error", err)
+		writeError(w, http.StatusBadGateway, "resource_estimate_failed", "live resource estimate failed", nil)
+		return
+	}
+	confirmed, ok := new(big.Int).SetString(balance.ConfirmedRaw, 10)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal_error", "stored balance is invalid", nil)
+		return
+	}
+	required := new(big.Int).Set(raw)
+	projectedCost := new(big.Int)
+	if resources.TRXCost != "" {
+		cost, costErr := store.ParseUnits(resources.TRXCost, 6)
+		if costErr != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "resource estimate is invalid", nil)
+			return
+		}
+		projectedCost.Set(cost)
+		if asset.Kind == "native" {
+			required.Add(required, cost)
+		}
+	}
+	balanceSufficient := confirmed.Cmp(required) >= 0
+	if asset.Kind != "native" && projectedCost.Sign() > 0 {
+		trxBalance, balanceErr := s.store.BalanceForWithdrawal(r.Context(), request.FromAddress, "TRX")
+		if errors.Is(balanceErr, sql.ErrNoRows) {
+			balanceSufficient = false
+		} else if balanceErr != nil {
+			s.writeWithdrawalError(w, balanceErr)
+			return
+		} else if available, valid := new(big.Int).SetString(trxBalance.ConfirmedRaw, 10); !valid || available.Cmp(projectedCost) < 0 {
+			balanceSufficient = false
+		}
+	}
+	quote, err := price.Current(r.Context(), s.store, priceCfg, request.Asset, time.Now())
+	if err != nil {
+		if errors.Is(err, price.ErrUnavailable) {
+			writeError(w, http.StatusServiceUnavailable, "price_unavailable", "asset price is unavailable or stale", nil)
+			return
+		}
+		s.writeWithdrawalError(w, err)
+		return
+	}
+	amountUSDValue, ok := exactUSD(raw, decimals, quote.USD)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "internal_error", "stored price is invalid", nil)
+		return
+	}
+	used, err := s.store.WithdrawalUSDUsed(r.Context(), time.Now())
+	if err != nil {
+		s.writeWithdrawalError(w, err)
+		return
+	}
+	amountUSD, amountOK := new(big.Rat).SetString(amountUSDValue)
+	dailyLimit, limitOK := new(big.Rat).SetString(withdrawalCfg.DailyLimitUSD)
+	if !amountOK || !limitOK {
+		writeError(w, http.StatusInternalServerError, "internal_error", "withdrawal limit configuration is invalid", nil)
+		return
+	}
+	dailyCapBlocked := new(big.Rat).Add(new(big.Rat).Set(used), amountUSD).Cmp(dailyLimit) > 0
+	blockedBy := make([]string, 0, 4)
+	if !withdrawalCfg.Enabled {
+		blockedBy = append(blockedBy, "withdrawals_disabled")
+	}
+	if !balanceSufficient {
+		blockedBy = append(blockedBy, "confirmed_balance")
+	}
+	if dailyCapBlocked {
+		blockedBy = append(blockedBy, "daily_usd_cap")
+	}
+	if resources.BlockedBy != "" {
+		blockedBy = append(blockedBy, resources.BlockedBy)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"confirmed_balance_sufficient": balanceSufficient,
+		"projected_energy_source":      resources.EnergySource,
+		"projected_trx_cost":           zeroIfEmpty(resources.TRXCost),
+		"daily_cap_blocked":            dailyCapBlocked,
+		"blocked_by":                   blockedBy,
+	})
+}
+
 func (s *Server) withdrawalJSON(withdrawal store.Withdrawal) map[string]any {
 	decimals, _ := s.assetDecimals(withdrawal.Asset)
 	amount, _ := store.FormatUnits(withdrawal.AmountRaw, decimals)
@@ -202,6 +342,8 @@ func (s *Server) writeWithdrawalError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "insufficient_confirmed_balance", err.Error(), nil)
 	case errors.Is(err, store.ErrSourceUnavailable), errors.Is(err, sql.ErrNoRows):
 		writeError(w, http.StatusBadRequest, "invalid_source", "source address is unavailable", nil)
+	case errors.Is(err, store.ErrWithdrawalState):
+		writeError(w, http.StatusConflict, "invalid_state", err.Error(), nil)
 	default:
 		s.logger.Error("withdrawal API failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"payd/internal/config"
+	"payd/internal/energy"
 	"payd/internal/store"
 	walletpool "payd/internal/wallet"
 )
@@ -45,6 +46,7 @@ type Server struct {
 type resourceDelegator interface {
 	DelegateResources(context.Context, string, string, int64, string, string) (store.ResourceGrant, error)
 	ProviderBalanceMetric() (string, bool)
+	EstimateResources(context.Context, string, string) (energy.ResourceEstimate, error)
 }
 
 func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger *slog.Logger) (*Server, error) {

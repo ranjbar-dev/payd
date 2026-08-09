@@ -104,6 +104,71 @@ func (e *Engine) ProviderBalanceMetric() (trx string, low bool) {
 	return e.providerBalanceTRX, e.providerBalanceLow
 }
 
+// EstimateResources performs the resource tier selection without persisting, signing, or broadcasting (API-032).
+func (e *Engine) EstimateResources(ctx context.Context, address, assetKind string) (energy.ResourceEstimate, error) {
+	if assetKind == "native" {
+		return energy.ResourceEstimate{EnergySource: "existing", TRXCost: "0"}, nil
+	}
+	e.mu.RLock()
+	cfg, provider := e.config, e.provider
+	e.mu.RUnlock()
+	body, err := e.reader.GetAccountResource(ctx, address)
+	if err != nil {
+		return energy.ResourceEstimate{}, err
+	}
+	resources, err := parseResources(body)
+	if err != nil {
+		return energy.ResourceEstimate{}, err
+	}
+	missing := cfg.Resources.MinEnergy - resources.energy
+	if missing <= 0 {
+		return energy.ResourceEstimate{EnergySource: "existing", TRXCost: "0"}, nil
+	}
+	if cfg.Energy.Enabled && provider != nil && e.providerEnabled() {
+		quote, quoteErr := provider.Quote(address, "ENERGY", cfg.Energy.RentAmount, cfg.Energy.RentDuration)
+		if quoteErr == nil {
+			price, priceOK := new(big.Rat).SetString(quote.PriceTRX)
+			maximum, maximumOK := new(big.Rat).SetString(cfg.Energy.MaxPriceTRX)
+			if priceOK && maximumOK && price.Sign() >= 0 && price.Cmp(maximum) <= 0 {
+				return energy.ResourceEstimate{EnergySource: "rented", TRXCost: quote.PriceTRX}, nil
+			}
+		}
+	}
+	amount, ratioErr := delegationAmount("ENERGY", missing, resources)
+	if ratioErr == nil {
+		_, owner, walletErr := e.store.ResourceWallet(ctx, cfg.Resources.ResourceWalletIndex)
+		if walletErr == nil {
+			maximumRaw, maximumErr := e.reader.GetCanDelegatedMaxSize(ctx, owner, "ENERGY")
+			var maximum struct {
+				Size int64 `json:"max_size"`
+			}
+			if maximumErr == nil && json.Unmarshal(maximumRaw, &maximum) == nil && maximum.Size >= amount {
+				return energy.ResourceEstimate{EnergySource: "self_delegated", TRXCost: "0"}, nil
+			}
+		}
+	}
+	if !cfg.Energy.FallbackToBurn {
+		return energy.ResourceEstimate{BlockedBy: "energy_unavailable", TRXCost: "0"}, nil
+	}
+	params, err := e.store.LoadChainParameters(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return energy.ResourceEstimate{BlockedBy: "chain_parameters_unavailable", TRXCost: "0"}, nil
+	}
+	if err != nil {
+		return energy.ResourceEstimate{}, err
+	}
+	cost := energy.BurnCostSun(missing, params.EnergyFee)
+	ceiling, ceilingErr := store.ParseUnits(cfg.Energy.MaxBurnTRX, 6)
+	if ceilingErr != nil || cost.Cmp(ceiling) > 0 {
+		return energy.ResourceEstimate{BlockedBy: "energy_burn_limit", TRXCost: "0"}, nil
+	}
+	formatted, err := store.FormatUnits(cost.String(), 6)
+	if err != nil {
+		return energy.ResourceEstimate{}, err
+	}
+	return energy.ResourceEstimate{EnergySource: "burned", TRXCost: formatted}, nil
+}
+
 // DelegateResources converts requested ENERGY/BANDWIDTH units using the live network ratio,
 // then enters the same durable single-broadcast path used by withdrawal resource sourcing (RES-010..013).
 func (e *Engine) DelegateResources(ctx context.Context, address, resourceType string, requestedUnits int64, actor, ip string) (store.ResourceGrant, error) {

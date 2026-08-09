@@ -151,7 +151,25 @@ Headers: `X-API-Key`, `Idempotency-Key`.
 | GET | `/readyz` | none | Readiness (see OPS-001) |
 | GET | `/metrics` | none | Prometheus |
 
-## 15.5 API conventions
+## 15.5 Tier B support and operator additions
+
+These endpoints were added after the original dashboard surface. Each closes a
+specific support or operator-visibility gap without adding a fund-moving retry.
+
+| ID | Method and path | Scope | Requirement and rationale |
+|---|---|---|---|
+| API-027 | `GET /payments` | `orders:read` | MUST filter by `txid`, `address`, `order_id`, `status`, `direction`, `asset`, and inclusive Unix `from`/`to`, with API-025 pagination, so support can find a customer transaction directly |
+| API-028 | `GET /orders` (extended) | `orders:read` | MUST additionally filter by `external_ref`, `consumer`, and `address`, so consumer invoice IDs do not require a write-path idempotency probe |
+| API-029 | `POST /orders/{id}/extend` | `orders:write` | MUST accept `ttl_seconds`, reject terminal orders with 409, update `updated_at`, and reject any expiry later than 24 hours after `created_at`, preventing indefinite address retention |
+| API-030 | `GET /orders/{id}/events` | `orders:read` | MUST expose the order's outbox consumer, event type, status, attempts, last response/error, creation, and delivery times with API-025 pagination, making missing-webhook investigations self-service |
+| API-031 | `POST /withdrawals/{id}/resolve` | `withdrawals:write` + TOTP | MUST accept only `{"outcome":"confirmed"\|"failed","failure_reason":"..."}` for `needs_operator` rows, set `resolved_by=operator`, audit actor and IP, preserve `txid`, and never sign, broadcast, retry, or resume; TOTP is supplied in `X-TOTP` so the JSON body remains exactly the decision record (WDR-018, API-015, API-022) |
+| API-032 | `POST /withdrawals/estimate` | `withdrawals:read` | MUST perform zero state writes and require no TOTP while reporting confirmed-balance sufficiency, projected energy source, projected TRX cost from live chain parameters, daily-cap blocking, and `blocked_by`, allowing a safe preflight without moving funds |
+| API-033 | `GET /auth/whoami` | any authenticated | MUST return only the authenticated key name and sorted scopes, letting clients diagnose their own authorization without weakening API-021 |
+| API-034 | `GET /assets` | any authenticated | MUST expose symbol, kind, contract, decimals, minimum deposit, and verified state, preventing clients from hardcoding amount precision |
+| API-035 | `POST /ipn/test` | `orders:write` | MUST send one signed `test.ping` directly to the named configured consumer, return status code and latency, reuse the production signature implementation, and never write an outbox row, allowing webhook validation without fake business events |
+| API-036 | `POST /ipn/replay` | `orders:write` | MUST filter dead events by consumer and inclusive Unix `from`/`to`, default `dry_run` to true, return only a count, and mutate no more than 200 events per call, making bulk recovery possible within the API rate limit |
+
+## 15.6 API conventions
 
 | ID | Requirement |
 |---|---|
