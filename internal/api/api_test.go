@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,9 +27,10 @@ import (
 )
 
 const (
-	testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-	testAPIKey   = "correct horse battery staple"
-	testTOTP     = "JBSWY3DPEHPK3PXP"
+	testMnemonic      = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	testAPIKey        = "correct horse battery staple"
+	testNoScopeAPIKey = "authenticated but unscoped"
+	testTOTP          = "JBSWY3DPEHPK3PXP"
 )
 
 // API-020/API-025: the embedded contract must stay in lockstep with both authenticated and public routes.
@@ -417,6 +419,343 @@ func TestWalletCanWithdrawRequiresBandwidth(t *testing.T) {
 	}
 }
 
+type fakeResourceDelegator struct {
+	address, resourceType, actor, ip string
+	amount                           int64
+	err                              error
+	providerBalance                  string
+}
+
+func (f *fakeResourceDelegator) DelegateResources(_ context.Context, address, resourceType string, amount int64, actor, ip string) (store.ResourceGrant, error) {
+	f.address, f.resourceType, f.amount, f.actor, f.ip = address, resourceType, amount, actor, ip
+	if f.err != nil {
+		return store.ResourceGrant{}, f.err
+	}
+	return store.ResourceGrant{ID: "grant-1", ReceiverAddress: address, ResourceType: resourceType, AmountSun: "2000000", Status: "broadcast", TxID: "delegate-tx"}, nil
+}
+
+func (f *fakeResourceDelegator) ProviderBalanceMetric() (string, bool) {
+	return f.providerBalance, false
+}
+
+func TestTierANewRoutesRequireAuthenticationAndScopes(t *testing.T) {
+	server, _, cleanup := testServer(t, 3)
+	defer cleanup()
+	server.SetDelegator(&fakeResourceDelegator{})
+	routes := []struct {
+		method, path string
+		unscopedOK   bool
+	}{
+		{http.MethodGet, "/api/v1/wallets", false},
+		{http.MethodGet, "/api/v1/wallets/with-balance", false},
+		{http.MethodGet, "/api/v1/wallets/unknown", false},
+		{http.MethodPost, "/api/v1/wallets/unknown/disable", false},
+		{http.MethodPost, "/api/v1/wallets/unknown/delegate", false},
+		{http.MethodGet, "/api/v1/ipn/dead", false},
+		{http.MethodPost, "/api/v1/ipn/unknown/retry", false},
+		{http.MethodGet, "/api/v1/ipn/consumers", false},
+		{http.MethodGet, "/api/v1/chain/params", false},
+		{http.MethodGet, "/api/v1/prices", true},
+		{http.MethodGet, "/api/v1/stats", true},
+		{http.MethodGet, "/api/v1/energy/status", false},
+		{http.MethodGet, "/api/v1/energy/purchases", false},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			missing := httptest.NewRecorder()
+			server.Handler().ServeHTTP(missing, httptest.NewRequest(route.method, route.path, nil))
+			if missing.Code != http.StatusUnauthorized {
+				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
+			}
+			unscoped := requestWithKey(t, server.Handler(), route.method, route.path, "", testNoScopeAPIKey)
+			want := http.StatusUnauthorized
+			if route.unscopedOK {
+				want = http.StatusOK
+			}
+			if unscoped.Code != want {
+				t.Fatalf("unscoped key = %d %s, want %d", unscoped.Code, unscoped.Body.String(), want)
+			}
+		})
+	}
+}
+
+func TestA1ListWallets(t *testing.T) {
+	server, _, cleanup := testServer(t, 2)
+	defer cleanup()
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/wallets", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"free"`) || !strings.Contains(response.Body.String(), `"next_cursor"`) {
+		t.Fatalf("wallet list = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA2WithBalanceLiteralRouteUsesConfirmedFunds(t *testing.T) {
+	server, database, cleanup := testServer(t, 2)
+	defer cleanup()
+	addresses := fundTestWallets(t, database, 1)
+	addressID := addresses[1].ID
+	if err := database.CommitBlock(context.Background(), store.BlockRecord{Height: 2, ID: "pending-block", ParentID: "fund-block", Timestamp: 2, ProcessedAt: 2}, 64, func(write *store.BlockWrite) error {
+		_, err := write.UpsertPayment(store.PaymentRecord{TxID: "pending-only", Direction: "in", BlockHeight: 2,
+			BlockID: "pending-block", BlockTimestamp: 2, FromAddress: "payer", ToAddress: addresses[1].Address,
+			AddressID: &addressID, Asset: "USDT", AmountRaw: "9000000", Status: "seen", DetectedAt: 2})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/wallets/with-balance", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), addresses[0].Address) || strings.Contains(response.Body.String(), addresses[1].Address) {
+		t.Fatalf("with-balance route = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA3WalletDetailAndUnknown(t *testing.T) {
+	server, database, cleanup := testServer(t, 2)
+	defer cleanup()
+	addresses := fundTestWallets(t, database, 1)
+	detail := request(t, server.Handler(), http.MethodGet, "/api/v1/wallets/"+addresses[0].Address, "")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"txid":"fund-0"`) {
+		t.Fatalf("wallet detail = %d %s", detail.Code, detail.Body.String())
+	}
+	unknown := request(t, server.Handler(), http.MethodGet, "/api/v1/wallets/TUnknown", "")
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown wallet = %d %s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestA4DisableWallet(t *testing.T) {
+	server, database, cleanup := testServer(t, 2)
+	defer cleanup()
+	addresses, err := database.WalletAddresses(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/"+addresses[0].Address+"/disable", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"disabled"`) {
+		t.Fatalf("disable wallet = %d %s", response.Code, response.Body.String())
+	}
+	disabled, err := database.WalletAddress(context.Background(), addresses[0].Address)
+	if err != nil || disabled.State != "disabled" {
+		t.Fatalf("stored wallet = %+v, %v", disabled, err)
+	}
+	unknown := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/TUnknown/disable", "")
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("disable unknown = %d %s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestA5DelegateWalletUsesEngine(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	addresses, _ := database.WalletAddresses(context.Background(), false)
+	fake := &fakeResourceDelegator{}
+	server.SetDelegator(fake)
+	response := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/"+addresses[0].Address+"/delegate", `{"resource_type":"ENERGY","amount":131000}`)
+	if response.Code != http.StatusAccepted || fake.address != addresses[0].Address || fake.resourceType != "ENERGY" || fake.amount != 131000 || fake.actor != "test" {
+		t.Fatalf("delegate = %d %s fake=%+v", response.Code, response.Body.String(), fake)
+	}
+	server.SetDelegator(&fakeResourceDelegator{err: store.ErrAddressNotFound})
+	unknown := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/TUnknown/delegate", `{"resource_type":"BANDWIDTH","amount":345}`)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("delegate unknown = %d %s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestA6DeadIPNList(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	id := createDeadIPN(t, database, testConfig(1), "dead-one")
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/ipn/dead?consumer=shop", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), id) || !strings.Contains(response.Body.String(), `"last_error":"sink failed"`) {
+		t.Fatalf("dead IPN = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA7RetryDeadIPN(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	id := createDeadIPN(t, database, testConfig(1), "retry-one")
+	response := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/"+id+"/retry", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"pending"`) {
+		t.Fatalf("retry IPN = %d %s", response.Code, response.Body.String())
+	}
+	conflict := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/"+id+"/retry", "")
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("retry non-dead = %d %s", conflict.Code, conflict.Body.String())
+	}
+	unknown := request(t, server.Handler(), http.MethodPost, "/api/v1/ipn/unknown/retry", "")
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("retry unknown = %d %s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestA8IPNConsumersNeverExposeSecretsOrURLs(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/ipn/consumers", "")
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `"name":"shop"`) || strings.Contains(body, "consumer-secret") || strings.Contains(body, "shop.invalid") {
+		t.Fatalf("consumers = %d %s", response.Code, body)
+	}
+}
+
+func TestA9ChainParameters(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	if _, err := database.UpsertChainParameters(context.Background(), 210, 1000, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/chain/params", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"getEnergyFee":210`) {
+		t.Fatalf("chain params = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA10PricesForAnyAuthenticatedKey(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	if err := database.UpsertPrices(context.Background(), []store.Price{{Symbol: "TRX", PriceUSD: "0.123456", Source: "test", FetchedAt: time.Now().Unix()}}); err != nil {
+		t.Fatal(err)
+	}
+	response := requestWithKey(t, server.Handler(), http.MethodGet, "/api/v1/prices", "", testNoScopeAPIKey)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"price_usd":"0.123456"`) {
+		t.Fatalf("prices = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA11StatsSharesOperationalMetrics(t *testing.T) {
+	server, _, cleanup := testServer(t, 1)
+	defer cleanup()
+	response := requestWithKey(t, server.Handler(), http.MethodGet, "/api/v1/stats", "", testNoScopeAPIKey)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"orders"`) || !strings.Contains(response.Body.String(), `"energy_costs"`) {
+		t.Fatalf("stats = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestA12EnergyStatusNeverExposesCredentials(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	cfg := testConfig(1)
+	if err := database.RecordEnergyProviderBalance(context.Background(), cfg.Energy.Provider, "12.5", cfg.Energy.BalanceWarnTRX, time.Now(), store.NewEventConfig(cfg.IPN, cfg.Assets)); err != nil {
+		t.Fatal(err)
+	}
+	server.SetDelegator(&fakeResourceDelegator{providerBalance: "13.5"})
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/energy/status", "")
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `"balance_trx":"13.5"`) || strings.Contains(body, "energy-key") || strings.Contains(body, "energy-secret") {
+		t.Fatalf("energy status = %d %s", response.Code, body)
+	}
+}
+
+func TestA13EnergyPurchases(t *testing.T) {
+	server, database, cleanup := testServer(t, 1)
+	defer cleanup()
+	addresses, _ := database.WalletAddresses(context.Background(), false)
+	if _, err := database.CreateEnergyPurchase(context.Background(), "test-energy", "", addresses[0].ID, addresses[0].Address, "ENERGY", 131000, time.Hour, "3.25", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	response := request(t, server.Handler(), http.MethodGet, "/api/v1/energy/purchases", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"quoted_trx":"3.25"`) || !strings.Contains(response.Body.String(), `"actual_trx":""`) {
+		t.Fatalf("energy purchases = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTierAListPaginationBoundsAndCursorRoundTrips(t *testing.T) {
+	server, database, cleanup := testServer(t, 3)
+	defer cleanup()
+	fundTestWallets(t, database, 2)
+	cfg := testConfig(3)
+	createDeadIPN(t, database, cfg, "dead-a")
+	createDeadIPN(t, database, cfg, "dead-b")
+	if err := database.UpsertPrices(context.Background(), []store.Price{
+		{Symbol: "AAA", PriceUSD: "1", Source: "test", FetchedAt: time.Now().Unix()},
+		{Symbol: "BBB", PriceUSD: "2", Source: "test", FetchedAt: time.Now().Unix()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	addresses, _ := database.WalletAddresses(context.Background(), false)
+	for i := range 2 {
+		if _, err := database.CreateEnergyPurchase(context.Background(), "test-energy", "", addresses[0].ID, addresses[0].Address, "ENERGY", int64(100+i), time.Hour, "1", time.Now().Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targets := []string{"/api/v1/wallets", "/api/v1/wallets/with-balance", "/api/v1/ipn/dead", "/api/v1/ipn/consumers", "/api/v1/prices", "/api/v1/energy/purchases"}
+	for _, target := range targets {
+		t.Run(target, func(t *testing.T) {
+			for _, invalid := range []string{"0", "201"} {
+				response := request(t, server.Handler(), http.MethodGet, target+"?limit="+invalid, "")
+				if response.Code != http.StatusBadRequest {
+					t.Fatalf("limit %s = %d %s", invalid, response.Code, response.Body.String())
+				}
+			}
+			first := request(t, server.Handler(), http.MethodGet, target+"?limit=1", "")
+			var page map[string]json.RawMessage
+			decodeResponse(t, first, &page)
+			var cursor string
+			if err := json.Unmarshal(page["next_cursor"], &cursor); err != nil || cursor == "" {
+				t.Fatalf("first page cursor = %q, %v; body=%s", cursor, err, first.Body.String())
+			}
+			second := request(t, server.Handler(), http.MethodGet, target+"?limit=1&cursor="+cursor, "")
+			if second.Code != http.StatusOK || second.Body.String() == first.Body.String() {
+				t.Fatalf("second page = %d %s; first=%s", second.Code, second.Body.String(), first.Body.String())
+			}
+		})
+	}
+}
+
+func TestLargeMoneyFormattingRoundTripsWithoutPrecisionLoss(t *testing.T) {
+	raw := new(big.Int).Exp(big.NewInt(10), big.NewInt(40), nil)
+	raw.Add(raw, big.NewInt(123456))
+	formatted, err := store.FormatUnits(raw.String(), 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := store.ParseUnits(formatted, 6)
+	if err != nil || parsed.Cmp(raw) != 0 {
+		t.Fatalf("raw=%s formatted=%s parsed=%v err=%v", raw, formatted, parsed, err)
+	}
+}
+
+func fundTestWallets(t *testing.T, database *store.Store, count int) []store.WalletAddress {
+	t.Helper()
+	ctx := context.Background()
+	addresses, err := database.WalletAddresses(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CommitBlock(ctx, store.BlockRecord{Height: 1, ID: "fund-block", ParentID: "genesis", Timestamp: 1, ProcessedAt: 1}, 64, func(write *store.BlockWrite) error {
+		for i := 0; i < count; i++ {
+			addressID := addresses[i].ID
+			if _, err := write.UpsertPayment(store.PaymentRecord{TxID: fmt.Sprintf("fund-%d", i), LogIndex: 0, Direction: "in", BlockHeight: 1,
+				BlockID: "fund-block", BlockTimestamp: 1, FromAddress: "payer", ToAddress: addresses[i].Address,
+				AddressID: &addressID, Asset: "USDT", AmountRaw: "1000000", Status: "confirmed", DetectedAt: 1}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return addresses
+}
+
+func createDeadIPN(t *testing.T, database *store.Store, cfg config.Config, marker string) string {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	events := store.NewEventConfig(cfg.IPN, cfg.Assets)
+	if err := database.EnqueueGlobalEvent(ctx, events, "test:"+marker, "payment.unattributed", map[string]any{"marker": marker}, now); err != nil {
+		t.Fatal(err)
+	}
+	event, found, err := database.ClaimIPN(ctx, now.Add(time.Second), []string{"shop"})
+	if err != nil || !found {
+		t.Fatalf("claim IPN: found=%v err=%v", found, err)
+	}
+	status := 500
+	if err := database.FailIPN(ctx, event.ID, "sink failed", &status, true, now); err != nil {
+		t.Fatal(err)
+	}
+	return event.ID
+}
+
 func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
 	t.Helper()
 	database, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "payd.db"))
@@ -444,15 +783,20 @@ func testServer(t *testing.T, poolSize int) (*Server, *store.Store, func()) {
 
 func testConfig(poolSize int) config.Config {
 	return config.Config{
-		Wallet:     config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
-		Assets:     []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
-		Orders:     config.Orders{DefaultTTL: 30 * time.Minute},
-		IPN:        config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{{Name: "shop", Enabled: true}}},
+		Wallet: config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
+		Assets: []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
+		Orders: config.Orders{DefaultTTL: 30 * time.Minute},
+		IPN: config.IPN{DefaultConsumer: "shop", Consumers: []config.Consumer{
+			{Name: "shop", URL: "https://shop.invalid/ipn", Secret: "consumer-secret", ReceivesGlobal: true, Enabled: true},
+			{Name: "analytics", URL: "https://analytics.invalid/ipn", Secret: "analytics-secret", Enabled: true},
+		}},
+		Energy:     config.Energy{Provider: "test-energy", APIKey: config.Secret("energy-key"), APISecret: config.Secret("energy-secret"), BalanceWarnTRX: "1"},
 		Price:      config.Price{Pairs: []string{"TRXUSDT"}, StaleAfter: 5 * time.Minute},
 		Withdrawal: config.Withdrawal{Enabled: true, DailyLimitUSD: "1000", FeeLimitTRX: 100, Expiration: time.Minute, RequireTOTP: true},
-		Auth: config.Auth{TOTPSecret: testTOTP, APIKeys: []config.APIKey{{
-			Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write", "withdrawals:read", "withdrawals:write"},
-		}}},
+		Auth: config.Auth{TOTPSecret: testTOTP, APIKeys: []config.APIKey{
+			{Name: "test", KeyHash: testKeyHash(testAPIKey), Scopes: []string{"orders:read", "orders:write", "wallets:read", "wallets:write", "withdrawals:read", "withdrawals:write", "resources:write"}},
+			{Name: "unscoped", KeyHash: testKeyHash(testNoScopeAPIKey)},
+		}},
 	}
 }
 
@@ -464,10 +808,14 @@ func testKeyHash(key string) string {
 }
 
 func request(t *testing.T, handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
+	return requestWithKey(t, handler, method, target, body, testAPIKey)
+}
+
+func requestWithKey(t *testing.T, handler http.Handler, method, target, body, key string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
-	req.Header.Set("X-API-Key", testAPIKey)
+	req.Header.Set("X-API-Key", key)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

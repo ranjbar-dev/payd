@@ -295,9 +295,14 @@ func (s *Store) ReleaseCooled(ctx context.Context, now time.Time) (int64, error)
 	return result.RowsAffected()
 }
 
-// DisableAddress permanently removes an owned address from rotation (POOL-007/008).
-func (s *Store) DisableAddress(ctx context.Context, address string) error {
-	result, err := s.normal.ExecContext(ctx, "UPDATE addresses SET state = 'disabled' WHERE address = ?", address)
+// DisableAddress permanently removes an owned address from rotation and records the operator action (POOL-007/008).
+func (s *Store) DisableAddress(ctx context.Context, address, actor, ip string, now time.Time) error {
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin disable address: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, "UPDATE addresses SET state = 'disabled' WHERE address = ?", address)
 	if err != nil {
 		return fmt.Errorf("disable address: %w", err)
 	}
@@ -308,7 +313,11 @@ func (s *Store) DisableAddress(ctx context.Context, address string) error {
 	if changed != 1 {
 		return ErrAddressNotFound
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log(actor,action,subject,detail,ip,created_at)
+		VALUES (?,'wallet.disable',?,NULL,?,?)`, actor, address, ip, now.UTC().Unix()); err != nil {
+		return fmt.Errorf("audit address disable: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Order(ctx context.Context, id string) (Order, error) {

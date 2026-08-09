@@ -52,20 +52,20 @@ type OperationalStatus struct {
 }
 
 type OperationalMetrics struct {
-	Orders             map[string]uint64
-	Payments           map[string]uint64
-	OrphanedUnresolved uint64
-	IPNDead            map[string]uint64
-	IPNQueue           map[string]uint64
-	Withdrawals        map[string]uint64
-	NeedsOperator      uint64
-	AddressesNeeding   uint64
-	AddressesFunded    uint64
-	BalanceDrift       uint64
-	EnergyPurchases    map[string]uint64
-	EnergyCosts        map[string]string
-	EnergyFeeSun       int64
-	ProviderBalanceTRX string
+	Orders             map[string]uint64 `json:"orders"`
+	Payments           map[string]uint64 `json:"payments"`
+	OrphanedUnresolved uint64            `json:"orphaned_unresolved"`
+	IPNDead            map[string]uint64 `json:"ipn_dead"`
+	IPNQueue           map[string]uint64 `json:"ipn_queue"`
+	Withdrawals        map[string]uint64 `json:"withdrawals"`
+	NeedsOperator      uint64            `json:"needs_operator"`
+	AddressesNeeding   uint64            `json:"addresses_needing_resources"`
+	AddressesFunded    uint64            `json:"addresses_funded"`
+	BalanceDrift       uint64            `json:"balance_drift"`
+	EnergyPurchases    map[string]uint64 `json:"energy_purchases"`
+	EnergyCosts        map[string]string `json:"energy_costs"`
+	EnergyFeeSun       int64             `json:"energy_fee_sun"`
+	ProviderBalanceTRX string            `json:"provider_balance_trx"`
 }
 
 // OperationalStatus supplies readiness state without exposing a database

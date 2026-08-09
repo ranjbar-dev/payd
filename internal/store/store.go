@@ -270,6 +270,23 @@ func (s *Store) AssetPrice(ctx context.Context, symbol string) (string, int64, e
 	return price, fetchedAt, nil
 }
 
+func (s *Store) Prices(ctx context.Context) ([]Price, error) {
+	rows, err := s.normal.QueryContext(ctx, "SELECT symbol,price_usd,source,fetched_at FROM prices ORDER BY symbol")
+	if err != nil {
+		return nil, fmt.Errorf("list prices: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var prices []Price
+	for rows.Next() {
+		var item Price
+		if err := rows.Scan(&item.Symbol, &item.PriceUSD, &item.Source, &item.FetchedAt); err != nil {
+			return nil, err
+		}
+		prices = append(prices, item)
+	}
+	return prices, rows.Err()
+}
+
 // UpsertPrices atomically records one successful provider response (PRC-001/004).
 func (s *Store) UpsertPrices(ctx context.Context, prices []Price) error {
 	tx, err := s.normal.BeginTx(ctx, nil)

@@ -27,7 +27,7 @@ type requestState struct {
 
 func (s *Server) requireScope(scope string, handler http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !requestStateFrom(r.Context()).scopes[scope] {
+		if scope != "" && !requestStateFrom(r.Context()).scopes[scope] {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed", nil) // API-021
 			return
 		}

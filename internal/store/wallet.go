@@ -62,11 +62,53 @@ func (s *Store) WalletAddresses(ctx context.Context, needsResourcesOnly bool) ([
         a.bandwidth_limit, a.bandwidth_used, a.needs_resources, a.resources_checked_at,
         b.asset, b.confirmed_raw, b.pending_raw, b.chain_raw, b.drift_detected
         FROM addresses a LEFT JOIN balances b ON b.address_id = a.id`
+	args := []any{}
 	if needsResourcesOnly {
 		query += " WHERE a.needs_resources = 1"
 	}
+	return s.walletAddresses(ctx, query, args)
+}
+
+func (s *Store) WalletAddress(ctx context.Context, address string) (WalletAddress, error) {
+	query := `SELECT a.id, a.hd_index, a.address, a.state, a.energy_limit, a.energy_used,
+        a.bandwidth_limit, a.bandwidth_used, a.needs_resources, a.resources_checked_at,
+        b.asset, b.confirmed_raw, b.pending_raw, b.chain_raw, b.drift_detected
+        FROM addresses a LEFT JOIN balances b ON b.address_id = a.id WHERE a.address = ?`
+	addresses, err := s.walletAddresses(ctx, query, []any{address})
+	if err != nil {
+		return WalletAddress{}, err
+	}
+	if len(addresses) == 0 {
+		return WalletAddress{}, ErrAddressNotFound
+	}
+	return addresses[0], nil
+}
+
+// WalletAddressesWithConfirmedBalance returns withdrawal sources only; pending funds are never spendable (WDR-005).
+func (s *Store) WalletAddressesWithConfirmedBalance(ctx context.Context) ([]WalletAddress, error) {
+	addresses, err := s.WalletAddresses(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	funded := addresses[:0]
+	for _, address := range addresses {
+		for _, balance := range address.Balances {
+			amount, ok := new(big.Int).SetString(balance.ConfirmedRaw, 10)
+			if !ok {
+				return nil, fmt.Errorf("invalid stored confirmed balance %q for address %d", balance.ConfirmedRaw, address.ID)
+			}
+			if amount.Sign() != 0 {
+				funded = append(funded, address)
+				break
+			}
+		}
+	}
+	return funded, nil
+}
+
+func (s *Store) walletAddresses(ctx context.Context, query string, args []any) ([]WalletAddress, error) {
 	query += " ORDER BY a.id, b.asset"
-	rows, err := s.normal.QueryContext(ctx, query)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list wallet addresses: %w", err)
 	}

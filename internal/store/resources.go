@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -55,6 +56,68 @@ func (s *Store) ResourceGrantForWithdrawal(ctx context.Context, withdrawalID, re
 		return ResourceGrant{}, false, nil
 	}
 	return grant, err == nil, err
+}
+
+func (s *Store) ResourceGrant(ctx context.Context, id string) (ResourceGrant, error) {
+	grant, err := scanResourceGrant(s.normal.QueryRowContext(ctx, resourceGrantSelect+" WHERE id=?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResourceGrant{}, ErrAddressNotFound
+	}
+	return grant, err
+}
+
+func (s *Store) ManualResourceGrantCandidates(ctx context.Context) ([]ResourceGrant, error) {
+	rows, err := s.normal.QueryContext(ctx, resourceGrantSelect+` WHERE withdrawal_id IS NULL
+		AND status IN ('requested','attempted','broadcast') ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var grants []ResourceGrant
+	for rows.Next() {
+		grant, err := scanResourceGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, grant)
+	}
+	return grants, rows.Err()
+}
+
+// CreateManualResourceGrant persists the operator request and its audit record before any broadcast (RES-013).
+func (s *Store) CreateManualResourceGrant(ctx context.Context, address, resourceType, amountSun string, requestedUnits int64, actor, ip string, now time.Time) (ResourceGrant, error) {
+	id, err := newULID(now)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var addressID int64
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM addresses WHERE address=?", address).Scan(&addressID); errors.Is(err, sql.ErrNoRows) {
+		return ResourceGrant{}, ErrAddressNotFound
+	} else if err != nil {
+		return ResourceGrant{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resource_grants
+		(id,withdrawal_id,address_id,receiver_address,resource_type,source,amount_sun,status,created_at)
+		VALUES (?,NULL,?,?,?,?,?,'requested',?)`, id, addressID, address, resourceType, "self_delegated", amountSun, now.UTC().Unix()); err != nil {
+		return ResourceGrant{}, fmt.Errorf("create manual resource grant: %w", err)
+	}
+	detail, err := json.Marshal(map[string]any{"grant_id": id, "resource_type": resourceType, "amount": requestedUnits, "amount_sun": amountSun})
+	if err != nil {
+		return ResourceGrant{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log(actor,action,subject,detail,ip,created_at)
+		VALUES (?,'resource.delegate',?,?,?,?)`, actor, address, string(detail), ip, now.UTC().Unix()); err != nil {
+		return ResourceGrant{}, fmt.Errorf("audit manual resource grant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ResourceGrant{}, err
+	}
+	return s.ResourceGrant(ctx, id)
 }
 
 func (s *Store) CreateResourceGrant(ctx context.Context, withdrawalID string, addressID int64, receiver, resourceType, source, amountSun string, now time.Time) (ResourceGrant, error) {

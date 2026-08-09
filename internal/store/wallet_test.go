@@ -50,3 +50,24 @@ func TestBAL001AttributionRecomputesAndDriftClearIsAudited(t *testing.T) {
 		t.Fatalf("clear-drift audits = %d, %v", audits, err)
 	}
 }
+
+func TestWalletDisableAndManualDelegationAreAudited(t *testing.T) {
+	ctx := context.Background()
+	database := testOrderStore(t)
+	if _, err := database.normal.Exec(`INSERT INTO addresses(hd_index,address,state,created_at) VALUES
+		(0,'TAddress000','free',1),(2,'TManual','free',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DisableAddress(ctx, "TAddress000", "operator", "127.0.0.1", time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := database.CreateManualResourceGrant(ctx, "TManual", "ENERGY", "2000000", 131000, "operator", "127.0.0.1", time.Unix(3, 0))
+	if err != nil || grant.WithdrawalID != "" || grant.AmountSun != "2000000" {
+		t.Fatalf("manual grant = %#v, %v", grant, err)
+	}
+	var audits int
+	if err := database.normal.QueryRow(`SELECT COUNT(*) FROM audit_log
+		WHERE actor='operator' AND ip='127.0.0.1' AND action IN ('wallet.disable','resource.delegate')`).Scan(&audits); err != nil || audits != 2 {
+		t.Fatalf("operator audits = %d, %v", audits, err)
+	}
+}

@@ -35,6 +35,12 @@ type IPNEvent struct {
 	CreatedAt   int64
 }
 
+type DeadIPN struct {
+	ID, OrderID, Consumer, EventType, LastError string
+	Attempts, LastStatusCode                    int
+	CreatedAt                                   int64
+}
+
 type EventConfig struct {
 	DefaultConsumer string
 	Consumers       map[string]EventConsumer
@@ -58,6 +64,43 @@ func (s *Store) OutboxCount(ctx context.Context, eventType string) (int, error) 
 	var count int
 	err := s.normal.QueryRowContext(ctx, "SELECT COUNT(*) FROM ipn_outbox WHERE event_type = ?", eventType).Scan(&count)
 	return count, err
+}
+
+func (s *Store) ListDeadIPN(ctx context.Context, consumer, after string, limit int) ([]DeadIPN, error) {
+	query := `SELECT id,COALESCE(order_id,''),consumer,event_type,attempts,COALESCE(last_error,''),
+		COALESCE(last_status_code,0),created_at FROM ipn_outbox WHERE status='dead'`
+	args := []any{}
+	if consumer != "" {
+		query, args = query+" AND consumer=?", append(args, consumer)
+	}
+	if after != "" {
+		query, args = query+" AND id>?", append(args, after)
+	}
+	query, args = query+" ORDER BY id LIMIT ?", append(args, limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list dead IPN events: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var events []DeadIPN
+	for rows.Next() {
+		var event DeadIPN
+		if err := rows.Scan(&event.ID, &event.OrderID, &event.Consumer, &event.EventType, &event.Attempts,
+			&event.LastError, &event.LastStatusCode, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) IPNStatus(ctx context.Context, id string) (string, bool, error) {
+	var status string
+	err := s.normal.QueryRowContext(ctx, "SELECT status FROM ipn_outbox WHERE id=?", id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return status, err == nil, err
 }
 
 // OutboxReady wakes W-004 after a producer commits an event.

@@ -104,6 +104,43 @@ func (e *Engine) ProviderBalanceMetric() (trx string, low bool) {
 	return e.providerBalanceTRX, e.providerBalanceLow
 }
 
+// DelegateResources converts requested ENERGY/BANDWIDTH units using the live network ratio,
+// then enters the same durable single-broadcast path used by withdrawal resource sourcing (RES-010..013).
+func (e *Engine) DelegateResources(ctx context.Context, address, resourceType string, requestedUnits int64, actor, ip string) (store.ResourceGrant, error) {
+	if resourceType != "ENERGY" && resourceType != "BANDWIDTH" {
+		return store.ResourceGrant{}, errors.New("resource_type must be ENERGY or BANDWIDTH")
+	}
+	if requestedUnits <= 0 {
+		return store.ResourceGrant{}, errors.New("amount must be positive")
+	}
+	if _, err := e.store.WalletAddress(ctx, address); err != nil {
+		return store.ResourceGrant{}, err
+	}
+	body, err := e.reader.GetAccountResource(ctx, address)
+	if err != nil {
+		return store.ResourceGrant{}, err
+	}
+	resources, err := parseResources(body)
+	if err != nil {
+		return store.ResourceGrant{}, err
+	}
+	amountSun, err := delegationAmount(resourceType, requestedUnits, resources)
+	if err != nil {
+		return store.ResourceGrant{}, err
+	}
+	grant, err := e.store.CreateManualResourceGrant(ctx, address, resourceType, fmt.Sprint(amountSun), requestedUnits, actor, ip, e.now())
+	if err != nil {
+		return store.ResourceGrant{}, err
+	}
+	e.mu.RLock()
+	cfg := e.config
+	e.mu.RUnlock()
+	if _, err := e.startDelegation(ctx, grant, cfg); err != nil {
+		return store.ResourceGrant{}, err
+	}
+	return e.store.ResourceGrant(ctx, grant.ID)
+}
+
 func (e *Engine) Run(ctx context.Context) {
 	// WDR-019a: forced startup reconciliation must succeed before the first claim.
 	for ctx.Err() == nil {
@@ -173,6 +210,24 @@ func (e *Engine) recover(ctx context.Context, force bool) error {
 	e.mu.RLock()
 	energyTimeout := e.config.Energy.PollTimeout
 	e.mu.RUnlock()
+	manualGrants, err := e.store.ManualResourceGrantCandidates(ctx)
+	if err != nil {
+		return err
+	}
+	for _, grant := range manualGrants {
+		e.mu.RLock()
+		cfg := e.config
+		e.mu.RUnlock()
+		var err error
+		if grant.Status == "requested" {
+			_, err = e.startDelegation(ctx, grant, cfg)
+		} else {
+			_, err = e.reconcileResourceGrant(ctx, grant, cfg)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	candidates, err := e.store.WithdrawalRecoveryCandidates(ctx, now, energyTimeout, force)
 	if err != nil {
 		return err
@@ -935,6 +990,9 @@ func (e *Engine) reconcileResourceGrant(ctx context.Context, grant store.Resourc
 		if receipt.Result != "" && receipt.Result != "SUCCESS" {
 			return false, e.store.FailResourceGrant(ctx, grant.ID, grant.BroadcastResponse, "solidified transaction result: "+receipt.Result)
 		}
+		if grant.WithdrawalID == "" {
+			return false, e.store.ConfirmResourceGrant(ctx, grant.ID, e.now())
+		}
 		timeout := 5 * time.Minute
 		if grant.ResourceType == "ENERGY" && cfg.Energy.PollTimeout > 0 {
 			timeout = cfg.Energy.PollTimeout
@@ -957,6 +1015,9 @@ func (e *Engine) resourceGrantLookupFailure(ctx context.Context, grant store.Res
 	}
 	if err := e.store.ResourceGrantNeedsOperator(ctx, grant.ID, lookupErr.Error()); err != nil {
 		return false, err
+	}
+	if grant.WithdrawalID == "" {
+		return false, nil
 	}
 	return false, e.store.WithdrawalNeedsOperator(ctx, grant.WithdrawalID, lookupErr.Error(), e.now(), e.eventConfig()) // WDR-000b
 }

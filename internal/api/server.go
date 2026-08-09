@@ -28,15 +28,23 @@ type Server struct {
 	mu                 sync.RWMutex
 	assets             map[string]config.Asset
 	price              config.Price
+	ipn                config.IPN
+	energy             config.Energy
 	resources          config.Resources
 	withdrawal         config.Withdrawal
 	cooldown           time.Duration
+	delegator          resourceDelegator
 	burnCeilingHealthy func() bool
 	readyChecks        func(context.Context) []string
 	metrics            http.Handler
 
 	rateMu sync.Mutex
 	rates  map[string]rateWindow
+}
+
+type resourceDelegator interface {
+	DelegateResources(context.Context, string, string, int64, string, string) (store.ResourceGrant, error)
+	ProviderBalanceMetric() (string, bool)
 }
 
 func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -96,6 +104,12 @@ func (s *Server) SetOperations(ready func(context.Context) []string, metrics htt
 	s.mu.Unlock()
 }
 
+func (s *Server) SetDelegator(delegator resourceDelegator) {
+	s.mu.Lock()
+	s.delegator = delegator
+	s.mu.Unlock()
+}
+
 func (s *Server) UpdateConfig(cfg config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,5 +120,6 @@ func (s *Server) UpdateConfig(cfg config.Config) {
 	for _, asset := range cfg.Assets {
 		s.assets[asset.Symbol] = asset
 	}
-	s.price, s.resources, s.withdrawal, s.cooldown = cfg.Price, cfg.Resources, cfg.Withdrawal, cfg.Wallet.Cooldown
+	s.price, s.ipn, s.energy = cfg.Price, cfg.IPN, cfg.Energy
+	s.resources, s.withdrawal, s.cooldown = cfg.Resources, cfg.Withdrawal, cfg.Wallet.Cooldown
 }

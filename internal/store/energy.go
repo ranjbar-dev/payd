@@ -17,6 +17,15 @@ type EnergyPurchase struct {
 	DelegatedAt                                                  *int64
 }
 
+type EnergyProviderStatus struct {
+	Provider            string            `json:"provider"`
+	BalanceTRX          string            `json:"balance_trx"`
+	LastCheckedAt       *int64            `json:"last_checked_at"`
+	LastError           string            `json:"last_error,omitempty"`
+	ConsecutiveFailures int64             `json:"consecutive_failures"`
+	Purchases           map[string]uint64 `json:"purchases"`
+}
+
 const energyPurchaseSelect = `SELECT id,provider,COALESCE(provider_order_id,''),COALESCE(withdrawal_id,''),address_id,
 	receiver_address,resource_type,energy_amount,duration_seconds,quoted_trx,COALESCE(actual_trx,''),status,
 	COALESCE(delegation_txid,''),COALESCE(failure_reason,''),created_at,delegated_at FROM energy_purchases`
@@ -42,6 +51,55 @@ func (s *Store) EnergyPurchaseForWithdrawal(ctx context.Context, withdrawalID st
 	return purchase, err == nil, err
 }
 
+func (s *Store) EnergyProviderStatus(ctx context.Context, provider string) (EnergyProviderStatus, error) {
+	status := EnergyProviderStatus{Provider: provider, BalanceTRX: "0", Purchases: make(map[string]uint64)}
+	var checked sql.NullInt64
+	err := s.normal.QueryRowContext(ctx, `SELECT balance_trx,last_checked_at,COALESCE(last_error,''),consecutive_failures
+		FROM energy_provider_state WHERE provider=?`, provider).Scan(&status.BalanceTRX, &checked, &status.LastError, &status.ConsecutiveFailures)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return EnergyProviderStatus{}, err
+	}
+	if checked.Valid {
+		status.LastCheckedAt = &checked.Int64
+	}
+	rows, err := s.normal.QueryContext(ctx, "SELECT status,COUNT(*) FROM energy_purchases WHERE provider=? GROUP BY status", provider)
+	if err != nil {
+		return EnergyProviderStatus{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var label string
+		var count uint64
+		if err := rows.Scan(&label, &count); err != nil {
+			return EnergyProviderStatus{}, err
+		}
+		status.Purchases[label] = count
+	}
+	return status, rows.Err()
+}
+
+func (s *Store) ListEnergyPurchases(ctx context.Context, after string, limit int) ([]EnergyPurchase, error) {
+	query, args := energyPurchaseSelect+" WHERE 1=1", []any{}
+	if after != "" {
+		query, args = query+" AND id>?", append(args, after)
+	}
+	query, args = query+" ORDER BY id LIMIT ?", append(args, limit)
+	rows, err := s.normal.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list energy purchases: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var purchases []EnergyPurchase
+	for rows.Next() {
+		purchase, err := scanEnergyPurchase(rows)
+		if err != nil {
+			return nil, err
+		}
+		purchases = append(purchases, purchase)
+	}
+	return purchases, rows.Err()
+}
+
 // CreateEnergyPurchase records the quote before the prepaid purchase call (ENR-009).
 func (s *Store) CreateEnergyPurchase(ctx context.Context, provider, withdrawalID string, addressID int64, receiver, resourceType string, amount int64, duration time.Duration, quotedTRX string, now time.Time) (EnergyPurchase, error) {
 	if value, ok := new(big.Rat).SetString(quotedTRX); !ok || value.Sign() < 0 {
@@ -51,9 +109,13 @@ func (s *Store) CreateEnergyPurchase(ctx context.Context, provider, withdrawalID
 	if err != nil {
 		return EnergyPurchase{}, err
 	}
+	var nullableWithdrawal any
+	if withdrawalID != "" {
+		nullableWithdrawal = withdrawalID
+	}
 	_, err = s.normal.ExecContext(ctx, `INSERT INTO energy_purchases
 		(id,provider,withdrawal_id,address_id,receiver_address,resource_type,energy_amount,duration_seconds,quoted_trx,status,created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,'quoted',?)`, id, provider, withdrawalID, addressID, receiver, resourceType,
+		VALUES (?,?,?,?,?,?,?,?,?,'quoted',?)`, id, provider, nullableWithdrawal, addressID, receiver, resourceType,
 		amount, int64(duration/time.Second), quotedTRX, now.UTC().Unix())
 	if err != nil {
 		return EnergyPurchase{}, fmt.Errorf("create energy purchase: %w", err)

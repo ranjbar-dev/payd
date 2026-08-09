@@ -540,6 +540,232 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/RateLimited'}
         '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets:
+    get:
+      tags: [Wallets]
+      summary: List wallet addresses
+      description: |
+        Lists every owned address with state, balances and resource status.
+        Requires scope `wallets:read`. Uses opaque cursor pagination.
+      x-required-scope: wallets:read
+      x-requirements: [API-003, API-014, API-020, API-025]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Wallet page., content: {application/json: {schema: {$ref: '#/components/schemas/WalletPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/with-balance:
+    get:
+      tags: [Wallets]
+      summary: List withdrawal source wallets
+      description: |
+        Lists only addresses with a non-zero confirmed balance; pending funds do not qualify.
+        Requires scope `wallets:read`. Uses opaque cursor pagination.
+      x-required-scope: wallets:read
+      x-requirements: [API-014, API-020, API-025, WDR-005]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Funded wallet page., content: {application/json: {schema: {$ref: '#/components/schemas/WalletPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/{address}:
+    parameters:
+      - {name: address, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [Wallets]
+      summary: Get wallet details and payment history
+      description: |
+        Returns one owned address with its balances, resources and complete payment history.
+        Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-003, API-014, API-020]
+      responses:
+        '200': {description: Wallet detail., content: {application/json: {schema: {$ref: '#/components/schemas/WalletDetail'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/{address}/disable:
+    parameters:
+      - {name: address, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [Wallets]
+      summary: Disable a wallet address
+      description: |
+        Permanently removes an owned address from rotation and audit-logs the operator.
+        Requires scope `wallets:write`.
+      x-required-scope: wallets:write
+      x-requirements: [API-020, API-024, POOL-007, POOL-008]
+      responses:
+        '200':
+          description: Address disabled.
+          content: {application/json: {schema: {type: object, required: [address, state], properties: {address: {type: string}, state: {type: string, const: disabled}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/wallets/{address}/delegate:
+    parameters:
+      - {name: address, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [Wallets]
+      summary: Delegate resources to a wallet
+      description: |
+        Requests an integer number of ENERGY or BANDWIDTH units. The engine converts that
+        request using live resource ratios and uses its durable, single-attempt broadcast path.
+        Requires scope `resources:write`.
+      x-required-scope: resources:write
+      x-requirements: [API-020, RES-010, RES-011, RES-012, RES-013, WDR-000]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [resource_type, amount]
+              properties:
+                resource_type: {type: string, enum: [ENERGY, BANDWIDTH]}
+                amount: {type: integer, format: int64, minimum: 1, description: Requested resource units.}
+      responses:
+        '202': {description: Delegation attempt recorded., content: {application/json: {schema: {$ref: '#/components/schemas/ResourceGrant'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/ipn/dead:
+    get:
+      tags: [IPN]
+      summary: List dead IPN events
+      description: |
+        Lists dead-lettered notifications, optionally for one consumer.
+        Requires scope `orders:read`. Uses opaque cursor pagination.
+      x-required-scope: orders:read
+      x-requirements: [API-020, API-025, IPN-009]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {name: consumer, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Dead event page., content: {application/json: {schema: {$ref: '#/components/schemas/DeadIPNPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/ipn/{id}/retry:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [IPN]
+      summary: Retry a dead IPN event
+      description: |
+        Resets one dead notification to pending for explicit manual redelivery.
+        Requires scope `orders:write`.
+      x-required-scope: orders:write
+      x-requirements: [API-020, IPN-010]
+      responses:
+        '200': {description: Event queued., content: {application/json: {schema: {type: object, required: [id, status], properties: {id: {type: string}, status: {type: string, const: pending}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/ipn/consumers:
+    get:
+      tags: [IPN]
+      summary: List configured IPN consumers
+      description: |
+        Returns names, enabled/global flags and queue counts; URLs and secrets are omitted.
+        Requires scope `orders:read`. Uses opaque cursor pagination.
+      x-required-scope: orders:read
+      x-requirements: [API-020, API-025, API-026]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Consumer page., content: {application/json: {schema: {$ref: '#/components/schemas/IPNConsumerPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/chain/params:
+    get:
+      tags: [Chain]
+      summary: Get live chain fee parameters
+      description: |
+        Returns governance-controlled energy and transaction fees with fetch time and staleness.
+        Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-020, ENR-016, RES-020]
+      responses:
+        '200': {description: Chain parameters., content: {application/json: {schema: {$ref: '#/components/schemas/ChainParameters'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/prices:
+    get:
+      tags: [Prices]
+      summary: List cached asset prices
+      description: |
+        Returns cached decimal USD prices and whether each is too stale for valuation.
+        Requires no scope. An authenticated API key is still required. Uses cursor pagination.
+      x-required-scope: ''
+      x-requirements: [API-003, API-020, API-025, PRC-005]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Price page., content: {application/json: {schema: {$ref: '#/components/schemas/PricePage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/stats:
+    get:
+      tags: [Operations]
+      summary: Get operational statistics
+      description: |
+        Returns the same shared operational metrics model used by the Prometheus endpoint.
+        Requires no scope. An authenticated API key is still required.
+      x-required-scope: ''
+      x-requirements: [API-020, OPS-003]
+      responses:
+        '200': {description: Operational statistics., content: {application/json: {schema: {$ref: '#/components/schemas/OperationalStats'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/energy/status:
+    get:
+      tags: [Energy]
+      summary: Get energy provider status
+      description: |
+        Returns provider balance/check state and purchase counts without provider credentials.
+        Requires scope `wallets:read`.
+      x-required-scope: wallets:read
+      x-requirements: [API-020, CFG-011, ENR-009, ENR-010]
+      responses:
+        '200': {description: Provider status., content: {application/json: {schema: {$ref: '#/components/schemas/EnergyStatus'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/energy/purchases:
+    get:
+      tags: [Energy]
+      summary: List energy purchases
+      description: |
+        Lists quoted and actual costs, outcomes, withdrawals and delegation transaction ids.
+        Requires scope `wallets:read`. Uses opaque cursor pagination.
+      x-required-scope: wallets:read
+      x-requirements: [API-003, API-020, API-025, ENR-009]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Purchase page., content: {application/json: {schema: {$ref: '#/components/schemas/EnergyPurchasePage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/InternalError'}
   /api/v1/wallets/needs-resources:
     get:
       tags: [Wallets]
@@ -1603,6 +1829,139 @@ components:
             What is still available today, as a decimal string. Never below zero. A
             withdrawal worth more than this is refused with 409 `daily_limit_exceeded`.
           example: '5000'
+    WalletPage:
+      type: object
+      additionalProperties: false
+      required: [wallets, next_cursor]
+      properties:
+        wallets: {type: array, items: {$ref: '#/components/schemas/WalletResource'}}
+        next_cursor: {type: string}
+    WalletDetail:
+      allOf:
+        - {$ref: '#/components/schemas/WalletResource'}
+        - type: object
+          required: [payments]
+          properties: {payments: {type: array, items: {$ref: '#/components/schemas/Payment'}}}
+    ResourceGrant:
+      type: object
+      additionalProperties: false
+      required: [id, address, resource_type, amount, stake_trx, status, txid]
+      properties:
+        id: {type: string}
+        address: {type: string}
+        resource_type: {type: string, enum: [ENERGY, BANDWIDTH]}
+        amount: {type: integer, format: int64, description: Requested resource units.}
+        stake_trx: {type: string, description: Delegated staked TRX represented as a decimal string.}
+        status: {type: string}
+        txid: {type: string}
+    DeadIPNPage:
+      type: object
+      additionalProperties: false
+      required: [events, next_cursor]
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            required: [id, order_id, consumer, event_type, attempts, last_error, last_status_code, created_at]
+            properties:
+              id: {type: string}
+              order_id: {type: string}
+              consumer: {type: string}
+              event_type: {type: string}
+              attempts: {type: integer}
+              last_error: {type: string}
+              last_status_code: {type: integer}
+              created_at: {type: integer, format: int64}
+        next_cursor: {type: string}
+    IPNConsumerPage:
+      type: object
+      additionalProperties: false
+      required: [consumers, next_cursor]
+      properties:
+        consumers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, enabled, receives_global, pending, dead]
+            properties:
+              name: {type: string}
+              enabled: {type: boolean}
+              receives_global: {type: boolean}
+              pending: {type: integer, format: int64}
+              dead: {type: integer, format: int64}
+        next_cursor: {type: string}
+    ChainParameters:
+      type: object
+      additionalProperties: false
+      required: [getEnergyFee, getTransactionFee, fetched_at, stale]
+      properties:
+        getEnergyFee: {type: integer, format: int64, description: Sun charged per energy unit.}
+        getTransactionFee: {type: integer, format: int64, description: Sun charged per bandwidth unit.}
+        fetched_at: {type: integer, format: int64}
+        stale: {type: boolean}
+    PricePage:
+      type: object
+      additionalProperties: false
+      required: [prices, next_cursor]
+      properties:
+        prices:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [symbol, price_usd, source, fetched_at, stale]
+            properties:
+              symbol: {type: string}
+              price_usd: {type: string}
+              source: {type: string}
+              fetched_at: {type: integer, format: int64}
+              stale: {type: boolean}
+        next_cursor: {type: string}
+    OperationalStats:
+      type: object
+      description: Shared store.OperationalMetrics JSON representation.
+      additionalProperties: true
+    EnergyStatus:
+      type: object
+      additionalProperties: false
+      required: [provider, balance_trx, consecutive_failures, purchases]
+      properties:
+        provider: {type: string}
+        balance_trx: {type: string}
+        last_checked_at: {type: [integer, 'null'], format: int64}
+        last_error: {type: string}
+        consecutive_failures: {type: integer, format: int64}
+        purchases: {type: object, additionalProperties: {type: integer, format: int64}}
+    EnergyPurchasePage:
+      type: object
+      additionalProperties: false
+      required: [purchases, next_cursor]
+      properties:
+        purchases:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, provider, provider_order_id, withdrawal_id, receiver_address, resource_type, amount, duration_seconds, quoted_trx, actual_trx, status, failure_reason, delegation_txid, created_at, delegated_at]
+            properties:
+              id: {type: string}
+              provider: {type: string}
+              provider_order_id: {type: string}
+              withdrawal_id: {type: string}
+              receiver_address: {type: string}
+              resource_type: {type: string, enum: [ENERGY, BANDWIDTH]}
+              amount: {type: integer, format: int64}
+              duration_seconds: {type: integer, format: int64}
+              quoted_trx: {type: string}
+              actual_trx: {type: string}
+              status: {type: string}
+              failure_reason: {type: string}
+              delegation_txid: {type: string}
+              created_at: {type: integer, format: int64}
+              delegated_at: {type: [integer, 'null'], format: int64}
+        next_cursor: {type: string}
     WalletResourceList:
       type: object
       additionalProperties: false
@@ -1620,7 +1979,7 @@ components:
     WalletResource:
       type: object
       additionalProperties: false
-      required: [address, hd_index, balances, energy, bandwidth, trx_for_bandwidth_burn, can_withdraw, blocked_by, drift_detected]
+      required: [address, hd_index, state, balances, energy, bandwidth, trx_for_bandwidth_burn, can_withdraw, blocked_by, drift_detected, needs_resources]
       properties:
         address:
           type: string
@@ -1633,6 +1992,8 @@ components:
             Position of this address in the wallet's derivation path. Together with the
             seed it is what regenerates the private key during recovery.
           example: 7
+        state: {type: string, enum: [free, assigned, cooling, disabled]}
+        needs_resources: {type: boolean}
         balances:
           type: array
           description: What the address holds, one entry per asset.

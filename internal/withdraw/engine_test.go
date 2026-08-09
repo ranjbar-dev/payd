@@ -552,6 +552,67 @@ func TestDelegationRawJSONRejectsMismatchedTxID(t *testing.T) {
 	}
 }
 
+func TestManualDelegationUsesSingleAttemptEnginePath(t *testing.T) {
+	engine, database, signer, reader, broadcast, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	addresses, err := database.WalletAddresses(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.resources = json.RawMessage(`{"TotalEnergyLimit":180000000000,"TotalEnergyWeight":30000000000}`)
+	reader.delegatable = json.RawMessage(`{"max_size":100000000000}`)
+	reader.delegation = json.RawMessage(`{"txID":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","raw_data_hex":"00","raw_data":{"expiration":2000000000000}}`)
+	broadcast.response = chain.Response{StatusCode: http.StatusOK, Body: json.RawMessage(`{"result":true}`)}
+	grant, err := engine.DelegateResources(context.Background(), addresses[0].Address, "ENERGY", 131000, "operator", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Status != "broadcast" || grant.WithdrawalID != "" || broadcast.calls != 1 || signer.calls != 1 || reader.delegatedResource != "ENERGY" {
+		t.Fatalf("grant=%#v broadcasts=%d signs=%d resource=%s", grant, broadcast.calls, signer.calls, reader.delegatedResource)
+	}
+	reader.transaction = json.RawMessage(`{"txID":"present"}`)
+	if err := engine.recover(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.recover(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	grant, err = database.ResourceGrant(context.Background(), grant.ID)
+	if err != nil || grant.Status != "confirmed" || broadcast.calls != 1 || signer.calls != 1 {
+		t.Fatalf("recovered grant=%#v err=%v broadcasts=%d signs=%d", grant, err, broadcast.calls, signer.calls)
+	}
+}
+
+func TestManualDelegationRequestedCrashStartsOnceOnRecovery(t *testing.T) {
+	engine, database, signer, reader, broadcast, cleanup := withdrawalFixture(t)
+	defer cleanup()
+	addresses, err := database.WalletAddresses(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.delegatable = json.RawMessage(`{"max_size":100000000000}`)
+	reader.delegation = json.RawMessage(`{"txID":"6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d","raw_data_hex":"00","raw_data":{"expiration":2000000000000}}`)
+	broadcast.response = chain.Response{StatusCode: http.StatusOK, Body: json.RawMessage(`{"result":true}`)}
+	grant, err := database.CreateManualResourceGrant(context.Background(), addresses[0].Address, "BANDWIDTH", "2000000", 345, "operator", "127.0.0.1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.recover(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	reader.transaction = json.RawMessage(`{"txID":"present"}`)
+	if err := engine.recover(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.recover(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	grant, err = database.ResourceGrant(context.Background(), grant.ID)
+	if err != nil || grant.Status != "confirmed" || broadcast.calls != 1 || signer.calls != 1 {
+		t.Fatalf("grant=%#v err=%v broadcasts=%d signs=%d", grant, err, broadcast.calls, signer.calls)
+	}
+}
+
 type countingSigner struct {
 	wallet *hdwallet.HDWallet
 	calls  int

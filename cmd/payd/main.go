@@ -155,6 +155,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	apiServer.SetDelegator(withdrawalWorker)
 	ipnWorker, err := ipn.New(db, cfg.IPN, logger)
 	if err != nil {
 		return err

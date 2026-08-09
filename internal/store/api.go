@@ -76,6 +76,10 @@ func (s *Store) OrderPayments(ctx context.Context, orderID string) ([]Payment, e
 	return s.listPayments(ctx, "order_id = ?", []any{orderID}, 0, 0)
 }
 
+func (s *Store) AddressPayments(ctx context.Context, addressID int64) ([]Payment, error) {
+	return s.listPayments(ctx, "address_id = ?", []any{addressID}, 0, 0)
+}
+
 func (s *Store) ListPayments(ctx context.Context, status string, after int64, limit int) ([]Payment, error) {
 	return s.listPayments(ctx, "status = ?", []any{status}, after, limit)
 }
