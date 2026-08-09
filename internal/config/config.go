@@ -360,6 +360,7 @@ func (c Config) Validate() error {
 		decimalValue("withdrawal.daily_limit_usd", c.Withdrawal.DailyLimitUSD, true)
 		add(c.Withdrawal.FeeLimitTRX > 0, "withdrawal.fee_limit_trx must be positive")
 		positiveDuration("withdrawal.expiration", c.Withdrawal.Expiration)
+		add(c.Withdrawal.RequireTOTP, "withdrawal.require_totp must be true when withdrawals are enabled (WDR-001)")
 	}
 
 	keyNames := make(map[string]struct{}, len(c.Auth.APIKeys))

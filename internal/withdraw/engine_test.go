@@ -121,7 +121,7 @@ func TestRentedEnergyPollsAtConfiguredIntervalAndAuditsArrival(t *testing.T) {
 		t.Fatal(err)
 	}
 	withdrawal := onlyWithdrawal(t, database)
-	if withdrawal.Status != "broadcast" || withdrawal.EnergySource != "rented" {
+	if withdrawal.Status != "broadcast" || withdrawal.EnergySource != "rented" || withdrawal.EnergyCostTRX != "3.7" {
 		t.Fatalf("rented withdrawal = %#v", withdrawal)
 	}
 	purchase, found, err := database.EnergyPurchaseForWithdrawal(ctx, withdrawal.ID)
@@ -158,7 +158,7 @@ func TestEnergyPurchaseTimeoutEmitsFailureAndFallsThrough(t *testing.T) {
 	}
 	withdrawal := onlyWithdrawal(t, database)
 	purchase, found, err := database.EnergyPurchaseForWithdrawal(ctx, withdrawal.ID)
-	if err != nil || !found || purchase.Status != "failed" || withdrawal.Status != "failed" {
+	if err != nil || !found || purchase.Status != "failed" || withdrawal.Status != "failed" || withdrawal.FailureReason != "self_delegation_unavailable" {
 		t.Fatalf("withdrawal=%#v purchase=%#v found=%v err=%v", withdrawal, purchase, found, err)
 	}
 	if count, err := database.OutboxCount(ctx, "energy.purchase_failed"); err != nil || count != 1 {

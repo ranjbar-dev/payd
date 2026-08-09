@@ -43,6 +43,7 @@ func TestConfigSafetyValidation(t *testing.T) {
 		},
 		"PRC-001 wrong interval": func(c *Config) { c.Price.Interval = 30 * time.Second },
 		"RES-001a fast tier cap": func(c *Config) { c.Resources.MaxPolledAddresses = 51 },
+		"WDR-001 TOTP disabled":  func(c *Config) { c.Withdrawal.RequireTOTP = false },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

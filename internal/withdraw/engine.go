@@ -482,7 +482,7 @@ func (e *Engine) sourceEnergy(ctx context.Context, w store.Withdrawal, resources
 		return false, "", err
 	}
 	if !cfg.Energy.FallbackToBurn {
-		return false, "", e.store.FailWithdrawalResources(ctx, w.ID, "energy_unavailable", e.now(), e.eventConfig())
+		return false, "", e.store.FailWithdrawalResources(ctx, w.ID, "self_delegation_unavailable", e.now(), e.eventConfig()) // WDR-009e
 	}
 	params, err := e.store.LoadChainParameters(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -500,7 +500,7 @@ func (e *Engine) sourceEnergy(ctx context.Context, w store.Withdrawal, resources
 	balance, err := e.store.BalanceForWithdrawal(ctx, w.FromAddress, "TRX")
 	available, ok := new(big.Int).SetString(balance.ConfirmedRaw, 10)
 	if err != nil || !ok || available.Cmp(cost) < 0 {
-		return false, "", e.store.FailWithdrawalResources(ctx, w.ID, "energy_unavailable", e.now(), e.eventConfig())
+		return false, "", e.store.FailWithdrawalResources(ctx, w.ID, "energy_burn_unavailable", e.now(), e.eventConfig()) // WDR-009e
 	}
 	burn, _ := store.FormatUnits(cost.String(), 6)
 	e.logger.Warn("self-delegation unavailable; using TRX burn", "withdrawal_id", w.ID, "estimated_burn_trx", burn) // RES-015

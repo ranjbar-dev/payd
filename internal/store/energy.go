@@ -88,10 +88,27 @@ func (s *Store) RecordEnergyPurchaseOrder(ctx context.Context, id, providerOrder
 }
 
 func (s *Store) CompleteEnergyPurchase(ctx context.Context, id, actualTRX, delegationTxID string, now time.Time) error {
-	_, err := s.normal.ExecContext(ctx, `UPDATE energy_purchases SET status='delegated',
+	tx, err := s.normal.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE energy_purchases SET status='delegated',
 		actual_trx=COALESCE(NULLIF(?,''),actual_trx,quoted_trx),delegation_txid=COALESCE(NULLIF(?,''),delegation_txid),delegated_at=?
 		WHERE id=? AND status='purchased'`, actualTRX, delegationTxID, now.UTC().Unix(), id)
-	return err
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 1 {
+		// WDR-009d/WDR-025: keep the withdrawal's visible cost in sync with the auditable purchase row.
+		if _, err := tx.ExecContext(ctx, `UPDATE withdrawals SET energy_cost_trx=(
+			SELECT COALESCE(actual_trx,quoted_trx) FROM energy_purchases WHERE id=?)
+			WHERE id=(SELECT withdrawal_id FROM energy_purchases WHERE id=?)`, id, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) FailEnergyPurchase(ctx context.Context, id, reason string, now time.Time, events EventConfig) error {
