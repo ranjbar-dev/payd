@@ -16,10 +16,7 @@ tron:
     - url: "https://nile.trongrid.io"
       api_key: "8e91c81f-81a6-4294-b3d5-31f88240222e" 
       weight: 100
-    - url: "https://tron-mainnet.gateway.tatum.io"
-      api_key: ""
-      weight: 10
-  solidity_url: "https://api.trongrid.io"
+  solidity_url: "https://nile.trongrid.io"
   poll_interval: 3s
   confirmations_required: 19
   reorg_depth: 64
@@ -32,9 +29,21 @@ assets:
     verified: true
   - symbol: "USDT"
     kind: "trc20"
-    contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    contract: "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
     decimals: 6
     min_deposit: "0.5"
+    verified: true
+  - symbol: "BTTC"
+    kind: "trc20"
+    contract: "TNuoKL1ni8aoshfFL1ASca1Gou9RXwAzfn"
+    decimals: 18
+    min_deposit: "3700000"
+    verified: true
+  - symbol: "JST"
+    kind: "trc20"
+    contract: "TF17BgPaZYbz8oxbjhriubPDsA7ArKoLX3"
+    decimals: 18
+    min_deposit: "10"
     verified: true
 orders:
   default_ttl: 30m
@@ -71,7 +80,7 @@ price:
   provider: "binance"
   url: "https://data-api.binance.vision/api/v3/ticker/price"
   interval: 60s
-  pairs: ["TRXUSDT"]
+  pairs: ["TRXUSDT","BTTCUSDT","JSTUSDT"]
   stale_after: 5m
 resources:
   min_energy: 131000
@@ -93,7 +102,7 @@ auth:
   api_keys:
     - name: "local"
       key_hash: "argon2id$v=19$m=65536,t=3,p=2$gLDB9FTfDI2HFA7RYxmhPQ$gPrhc8FEkaQYaMcUp3vSyi9UjDc8v+yKp7vHYVkv3yI" # api key: 45k653AmthF070ei0qzifoGXIPfjyqNXpeXG-UNtAb0
-      scopes: ["orders:write"]
+      scopes: ["orders:write", "orders:read", "wallets:read"]
   totp_secret: "W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT"  # run ./paydev totp W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT to get the current TOTP code 
 log:
   level: "info"
