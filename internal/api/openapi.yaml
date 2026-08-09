@@ -3,9 +3,35 @@ info:
   title: payd HTTP API
   version: 1.0.0
   description: |
-    The HTTP API served by payd. Monetary values are decimal strings, never JSON numbers (API-003, DB-001).
-    Authentication is per-key with a general limit of 100 requests per minute and a withdrawal-route
-    limit of 10 requests per minute; exceeding either limit returns HTTP 429 (API-020, API-023).
+    The HTTP API served by payd, a self-hosted TRON payment processor. It creates
+    payment orders against pooled TRON addresses, reports the payments detected on
+    chain for them, and moves funds out again through operator-approved withdrawals.
+
+    **Money is always a decimal string**, never a JSON number — `"1.5"`, not `1.5`.
+    JSON numbers cannot represent every base-unit value exactly, so every amount
+    field in every request and response is a string. Fields ending in `_raw` are in
+    base units (SUN for TRX, 6-decimal units for USDT); all other amount fields are
+    in whole asset units.
+
+    **Authentication** is a shared secret in the `X-API-Key` request header. Each key
+    carries its own set of scopes (`orders:read`, `orders:write`, `wallets:read`,
+    `wallets:write`, `withdrawals:read`, `withdrawals:write`), and every operation
+    below states the one scope it requires. A missing key, a wrong key, or a key
+    without the required scope all return the same 401 with no further detail.
+
+    **Rate limits** are counted per API key in fixed one-minute windows: 100 requests
+    per minute in general, and 10 requests per minute on `/api/v1/withdrawals` and its
+    subpaths. Exceeding either returns 429 `rate_limited`.
+
+    **Errors** always use the envelope `{"error": {"code", "message", "details"}}`.
+    Match on `code`, not on `message`. Each operation lists the codes it can emit under
+    the `x-error-codes` extension. The two exceptions are `/readyz`, which reports
+    degradation using its own readiness shape, and `/metrics`, which is plain text.
+
+    `/healthz`, `/readyz`, `/metrics`, `/openapi.yaml` and `/docs` require no key and
+    are not rate limited. They are unauthenticated because the server is expected to
+    bind loopback or a private interface; do not expose it publicly without a proxy
+    in front.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -22,8 +48,42 @@ paths:
     post:
       tags: [Orders]
       summary: Create or replay an order
-      description: Requires scope `orders:write`. Implements API-001, API-002, API-003, API-004, API-005, API-006, API-020, and API-024.
+      description: |
+        Creates a payment order and assigns it a TRON address from the pool. The payer
+        sends funds to that address; the chain follower attributes incoming transfers to
+        the order and advances its status. Returns 201 for a new order, 200 for a replay.
+
+        Requires scope `orders:write`. Rate limit 100 requests/minute per API key.
+
+        **Amount.** Supply exactly one of `amount` (whole asset units) or `amount_usd`.
+        Both or neither is 400 `invalid_order`. A USD amount is converted at the current
+        price and must land on a whole base unit, otherwise 400 `invalid_amount`. The
+        price and the time it was fetched are snapshotted onto the order, so later price
+        movement never changes what the payer owes.
+
+        **Idempotency** is keyed on `external_ref`. Sending the same `external_ref` again
+        returns the existing order with 200 — but only when `asset`, expected amount and
+        `consumer` all match. Any mismatch is 409 `external_ref_conflict`, and
+        `details.fields` names exactly which of the three differ. Omit `external_ref` and
+        every call creates a new order.
+
+        **Consumer.** Determines where payment webhooks are delivered. Empty falls back to
+        the configured default consumer; an unknown or disabled consumer is 400
+        `invalid_order`. A consumer cannot be changed after the order is created.
+
+        **Other fields.** `ttl_seconds` of 0 (or absent) falls back to the configured
+        default order TTL; the resulting `expires_at` is when an unpaid order expires and
+        its address is recycled. `metadata` must be a JSON object and is stored verbatim
+        and echoed back. Unknown JSON fields are rejected with 400 `invalid_request`, as
+        is a body over 1 MiB.
+
+        **Unavailability.** 503 `price_unavailable` when no price quote exists or the last
+        one is older than the configured staleness limit — an order is never created at a
+        guessed rate. 503 `address_pool_exhausted` when every pooled address is in use and
+        the pool is already at its configured maximum size; retry after orders expire or
+        raise the limit.
       x-required-scope: orders:write
+      x-requirements: [API-001, API-002, API-003, API-004, API-005, API-006, API-020, API-024]
       x-error-codes:
         400: [invalid_request, invalid_order, invalid_amount]
         401: [unauthorized]
@@ -46,7 +106,9 @@ paths:
               metadata: {user_id: 1}
       responses:
         '200':
-          description: Exact external_ref replay; the existing order is returned (API-002).
+          description: |
+            Replay. The `external_ref` matched an existing order on asset, amount and
+            consumer, so that order is returned unchanged and nothing new was created.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Order'}
@@ -74,7 +136,9 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409':
-          description: external_ref is already bound to a different request (`external_ref_conflict`).
+          description: |
+            The `external_ref` is already bound to a different order. `details.fields`
+            lists which of `asset`, `expected_raw` (the amount) or `consumer` disagree.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -89,8 +153,24 @@ paths:
     get:
       tags: [Orders]
       summary: List orders
-      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      description: |
+        Lists orders newest-last in ULID order, with optional filtering.
+
+        Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
+
+        **Paging** is keyset-based, not offset-based, so rows are never skipped or
+        repeated while the list changes underneath you. Pass `limit` (1-200, default 50).
+        If more rows remain, the response carries a non-empty `next_cursor`; pass it back
+        as `cursor` to get the following page. An empty `next_cursor` means the last page.
+        A `limit` outside the range, or a cursor that is not the opaque value from a
+        previous response, is 400 `invalid_pagination`.
+
+        **Filters** are all optional and combine with AND: `status` and `asset` are exact
+        matches; `created_from` and `created_to` are inclusive Unix-second bounds on
+        creation time. A non-integer bound, or `created_from` later than `created_to`, is
+        400 `invalid_filter`.
       x-required-scope: orders:read
+      x-requirements: [API-003, API-020, API-024, API-025]
       x-error-codes:
         400: [invalid_pagination, invalid_filter]
         401: [unauthorized]
@@ -127,8 +207,23 @@ paths:
     get:
       tags: [Orders]
       summary: List unresolved funded terminal orders
-      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      description: |
+        Lists the orders that need an operator decision: orders that received money but
+        ended without completing — status `expired_funded` or `cancelled_funded` — and
+        that have not yet been resolved through `POST /api/v1/orders/{id}/resolve`. This
+        is the work queue for refunds and write-offs; an order disappears from it once
+        resolved.
+
+        Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
+
+        Each entry is a normal order plus a `payers` array holding the distinct sender
+        addresses of its inbound payments, so a refund can be issued straight from this
+        response without a separate chain lookup.
+
+        Paging works exactly as on `GET /api/v1/orders`: `limit` 1-200 (default 50), and
+        `cursor` set from the previous response's `next_cursor`.
       x-required-scope: orders:read
+      x-requirements: [API-003, API-020, API-024, API-025]
       x-error-codes:
         400: [invalid_pagination]
         401: [unauthorized]
@@ -153,8 +248,18 @@ paths:
     get:
       tags: [Orders]
       summary: Get an order and its payments
-      description: Requires scope `orders:read`. Implements API-003, API-020, and API-024.
+      description: |
+        Returns one order by its identifier, together with every payment attributed to it
+        in a `payments` array. Use this to explain an order's balance: `received` and
+        `overpaid` on the order are the totals, and the `payments` entries are the
+        individual on-chain transfers behind them, each with its transaction id, sender,
+        block height and confirmation state.
+
+        Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
+
+        An unknown identifier is 404 `not_found`.
       x-required-scope: orders:read
+      x-requirements: [API-003, API-020, API-024]
       x-error-codes:
         401: [unauthorized]
         404: [not_found]
@@ -184,8 +289,32 @@ paths:
     post:
       tags: [Orders]
       summary: Cancel an order
-      description: Requires scope `orders:write`. Implements API-003, API-020, and API-024.
+      description: |
+        Cancels an order so it stops accepting payment, and returns the updated order.
+
+        Requires scope `orders:write`. Rate limit 100 requests/minute per API key.
+
+        The request body is optional; its only field is `force`.
+
+        **Unfunded orders** (status `pending`) cancel without `force`.
+
+        **Funded orders** (status `partial`, `paid` or `confirmed`) refuse with 409
+        `order_funded` unless you send `{"force": true}`. The guard exists because money
+        has already arrived at the address and cancelling does not return it — settle or
+        refund the payer yourself. A forced cancellation of an order that received
+        anything is recorded as `cancelled_funded`, not `cancelled`, so it stays visible
+        in `GET /api/v1/orders/funded-terminal` until you resolve it.
+
+        **Already-finished orders** (`expired`, `expired_funded`, `cancelled`,
+        `cancelled_funded`) are 409 `order_terminal` — `force` does not override this.
+
+        **Side effect.** The order's address is released into a cooldown period and is not
+        handed to a new order until that window passes, so a late payment to the old
+        address is not mistaken for payment of a new order.
+
+        An unknown identifier is 404 `not_found`.
       x-required-scope: orders:write
+      x-requirements: [API-003, API-020, API-024]
       x-error-codes:
         400: [invalid_request]
         401: [unauthorized]
@@ -201,7 +330,12 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                force: {type: boolean, default: false}
+                force:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Required to cancel an order that already received funds. Has no
+                    effect on an order that has already finished.
       responses:
         '200':
           description: Cancelled order.
@@ -218,8 +352,29 @@ paths:
     post:
       tags: [Orders]
       summary: Record resolution of a funded terminal order
-      description: Requires scope `orders:write`. Implements API-020 and API-024.
+      description: |
+        Records how a funded-but-unfinished order was dealt with, clearing it from the
+        operator queue at `GET /api/v1/orders/funded-terminal`.
+
+        Requires scope `orders:write`. Rate limit 100 requests/minute per API key.
+
+        **This is bookkeeping only.** It moves no funds and broadcasts no transaction.
+        Refund or reassign the money first, then record what you did here.
+
+        `resolution` must be one of `refunded` (money sent back to the payer),
+        `written_off` (kept, no further action) or `reattributed` (credited elsewhere);
+        anything else is 400 `invalid_order`. `resolution_note` is free text for the
+        audit trail — put the refund transaction id or the ticket reference in it.
+
+        Only an order in `expired_funded` or `cancelled_funded` that has not been
+        resolved yet can be resolved. An unknown identifier, an order in any other
+        status, and an order already resolved are all 404 `not_found` — resolving is not
+        idempotent, so treat a 404 after a success as "already recorded".
+
+        **Side effect.** Writes an audit-log entry naming the API key that made the call,
+        the resolution and the note.
       x-required-scope: orders:write
+      x-requirements: [API-020, API-024]
       x-error-codes:
         400: [invalid_request, invalid_order]
         401: [unauthorized]
@@ -255,8 +410,21 @@ paths:
     get:
       tags: [Payments]
       summary: List unattributed payments
-      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      description: |
+        Lists inbound transfers that landed on a pooled address but could not be matched
+        to an order automatically — for example the payer sent the wrong amount, paid
+        after the order expired, or reused an old address. Their `order_id` is null and
+        they are not counted towards any order's balance.
+
+        Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
+
+        Resolve an entry by binding it to an order with
+        `POST /api/v1/payments/{id}/attribute`.
+
+        Paging uses `limit` (1-200, default 50) and `cursor` from the previous response's
+        `next_cursor`; the cursor encodes a numeric payment id.
       x-required-scope: orders:read
+      x-requirements: [API-003, API-020, API-024, API-025]
       x-error-codes:
         400: [invalid_pagination]
         401: [unauthorized]
@@ -277,8 +445,22 @@ paths:
     get:
       tags: [Payments]
       summary: List orphaned payments
-      description: Requires scope `orders:read`. Implements API-003, API-020, API-024, and API-025.
+      description: |
+        Lists inbound transfers to a pooled address that the processor cannot attribute at
+        all — the address has no order that could own them, so no amount of matching will
+        fix them. Money that shows up here is real and sitting in the wallet; it needs a
+        human decision (refund the sender, or credit it to an order by hand with
+        `POST /api/v1/payments/{id}/attribute`).
+
+        Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
+
+        A non-zero count here is worth alerting on; the same figure is exported as the
+        `payd_payments_orphaned_unresolved` metric.
+
+        Paging uses `limit` (1-200, default 50) and `cursor` from the previous response's
+        `next_cursor`; the cursor encodes a numeric payment id.
       x-required-scope: orders:read
+      x-requirements: [API-003, API-020, API-024, API-025]
       x-error-codes:
         400: [invalid_pagination]
         401: [unauthorized]
@@ -305,8 +487,29 @@ paths:
     post:
       tags: [Payments]
       summary: Attribute a payment to an order
-      description: Requires scope `orders:write`. Implements API-020 and API-024.
+      description: |
+        Binds a payment the processor could not match automatically to an order, by hand.
+        Use it to rescue the entries returned by `GET /api/v1/payments/unattributed` and
+        `GET /api/v1/payments/orphaned`.
+
+        Requires scope `orders:write`. Rate limit 100 requests/minute per API key.
+
+        The path parameter is the numeric payment id from those listings — not a
+        transaction hash. A non-numeric or non-positive id is 400 `invalid_payment`; a
+        missing or empty `order_id` is 400 `invalid_request`.
+
+        **Side effects, applied atomically.** The payment is linked to the order and
+        promoted to `confirmed` if it already has enough block confirmations, otherwise to
+        `seen`. The order's `received`, `overpaid` and `status` are recalculated, which can
+        move it to `partial`, `paid` or `confirmed` and emit the corresponding payment
+        webhook to its consumer. The address balance for that asset is recalculated too.
+
+        **404 `not_found`** covers every rejection: unknown order, unknown payment, a
+        payment that is not currently unattributed, and the race where another request
+        attributed it first. Re-read the payment before retrying — a 404 after a success
+        means it is already attributed, not that it vanished.
       x-required-scope: orders:write
+      x-requirements: [API-020, API-024]
       x-error-codes:
         400: [invalid_payment, invalid_request]
         401: [unauthorized]
@@ -341,8 +544,36 @@ paths:
     get:
       tags: [Wallets]
       summary: List wallets needing resources
-      description: Requires scope `wallets:read`. Implements API-003, API-010, API-011, API-012, API-013, API-014, API-020, API-024, and API-025. The current handler returns the complete set and ignores pagination parameters.
+      description: |
+        Lists every pooled address that cannot currently send a transaction because it is
+        short of TRON resources, and explains what each one is missing. On TRON a transfer
+        consumes bandwidth, and a token transfer also consumes energy; an address without
+        enough of either must burn TRX instead, and with no TRX it is stuck. Use this to
+        decide where to delegate or rent resources before a withdrawal is attempted.
+
+        Requires scope `wallets:read`. Rate limit 100 requests/minute per API key.
+
+        **This endpoint returns the complete set in one response.** The `limit` and
+        `cursor` parameters are accepted for consistency with the other list endpoints but
+        are ignored, and there is no `next_cursor`.
+
+        Per address the response gives:
+
+        - `energy` and `bandwidth`: what is `available`, the account `limit`, how much is
+          `required` by configuration, and whether that is `sufficient`.
+        - `balances[]`: per asset, `confirmed` and `pending` reported separately (only
+          confirmed funds can be withdrawn), plus a `drift_detected` flag. The `usd` field
+          is omitted rather than guessed when no fresh price quote is available.
+        - `can_withdraw`: a per-asset map. An asset is withdrawable only when the address
+          has no balance drift, can cover bandwidth (held or burnable with TRX), and — for
+          token assets only — has enough energy. TRX itself needs no energy.
+        - `blocked_by`: which of `bandwidth` or `energy` is short.
+        - `estimated_burn_trx` and `energy_fee_sun`: what a transfer would cost in burned
+          TRX at the current on-chain energy price. Present only once chain parameters
+          have been read.
+        - `checked_at`: when the address was last polled on chain; absent if never polled.
       x-required-scope: wallets:read
+      x-requirements: [API-003, API-010, API-011, API-012, API-013, API-014, API-020, API-024, API-025]
       x-error-codes:
         401: [unauthorized]
         429: [rate_limited]
@@ -366,8 +597,33 @@ paths:
     post:
       tags: [Wallets]
       summary: Clear balance drift after operator review
-      description: Requires scope `wallets:write`. Implements API-020 and API-024; this is the operator action described by BAL-002.
+      description: |
+        Clears the balance-drift flag on an address after a human has checked it.
+
+        Drift means the balance the processor computed from the payments it recorded no
+        longer matches the balance the chain reports — funds moved by some path the
+        processor did not see, or a payment was missed. While the flag is set, every
+        withdrawal from that address is refused with 409 `balance_drift`, because signing
+        against a balance you do not trust risks spending money that is not there. This
+        endpoint is the only way to lift that block.
+
+        Requires scope `wallets:write`. Rate limit 100 requests/minute per API key.
+
+        **Reconcile before calling.** Compare the address on a block explorer with the
+        payments the processor holds and account for the difference first; clearing the
+        flag does not correct any balance, it only stops the alarm.
+
+        The request takes no body — any body sent is ignored. The flag is cleared for
+        **all assets** on the address at once, and clearing an address that was not
+        actually flagged still succeeds. The response is always
+        `{"drift_detected": false}`.
+
+        **Side effect.** Writes an audit-log entry with the API key name, the caller's IP
+        address and how many balance rows were cleared.
+
+        An unknown address is 404 `not_found`.
       x-required-scope: wallets:write
+      x-requirements: [API-020, API-024, BAL-002]
       x-error-codes:
         401: [unauthorized]
         404: [not_found]
@@ -390,8 +646,59 @@ paths:
     post:
       tags: [Withdrawals]
       summary: Create or replay a withdrawal request
-      description: Requires scope `withdrawals:write`. A new request returns 201; an identical Idempotency-Key replay returns the existing row with 200. Implements API-003, API-015, API-020, API-022, API-023, API-024, and API-026.
+      description: |
+        Requests a transfer of funds out of a pooled address to an external address.
+
+        Requires scope `withdrawals:write`. Rate limit **10 requests/minute** per API key
+        on this path and its subpaths, not the usual 100.
+
+        **This endpoint only records the request.** It returns as soon as the row is
+        stored in status `requested`; a background worker acquires resources, signs and
+        broadcasts the transaction afterwards. Poll `GET /api/v1/withdrawals/{id}` for the
+        outcome. A 201 means "accepted", never "sent".
+
+        **Idempotency-Key is mandatory** and is checked *before* the TOTP code is even
+        looked at. That ordering is deliberate: a client that times out and retries sends
+        the same key together with the same TOTP code, and treating that as a replayed
+        code would reject an honest retry. A missing header is 400
+        `missing_idempotency_key`.
+
+        - Key already used, and `from_address`, `to_address`, `asset` and `amount` all
+          match: 200 with the stored withdrawal. Nothing new is created and the TOTP code
+          is not consumed a second time.
+        - Key already used with any different value: 409 `idempotency_key_reuse`. Pick a
+          fresh key for a genuinely different transfer.
+        - New key: 201 with the newly created withdrawal.
+
+        **TOTP.** When required by configuration, `totp` must be a 6-digit code from the
+        configured authenticator secret. Codes are accepted within one 30-second step
+        either side of the current one, and each code is consumed once — its use is stored
+        in the database, so a restart does not make it reusable. Any failure (bad code,
+        already used, no secret configured) is 401 `invalid_totp`. Request bodies are
+        never written to the logs, so codes do not leak there.
+
+        **Checks, in the order they are applied.** Withdrawals disabled in configuration:
+        503 `withdrawals_disabled`. Unknown asset: 400 `invalid_asset`. Malformed
+        destination address or a non-positive amount: 400 `invalid_withdrawal`. No fresh
+        price quote for the USD valuation: 503 `price_unavailable`. Source address unknown
+        or disabled: 400 `invalid_source`. Source flagged for balance drift: 409
+        `balance_drift` — clear it via `POST /api/v1/wallets/{address}/clear-drift` first.
+        Amount above the source's **confirmed** balance: 409
+        `insufficient_confirmed_balance`; pending funds are never spendable. Amount that
+        would push the running USD total past the daily cap: 409 `daily_limit_exceeded` —
+        check the remaining allowance with `GET /api/v1/withdrawals/limits`. The cap is
+        enforced as part of the same database write, so two concurrent requests cannot
+        both slip under it.
+
+        **There is no retry, resume or re-broadcast endpoint anywhere in this API.** A
+        withdrawal that fails is terminal; to try again, submit a new request with a new
+        `Idempotency-Key`. This is a deliberate safety property — nothing in the system can
+        re-broadcast a signed transfer, so a stuck withdrawal can never quietly send twice.
+
+        **Side effects.** Stores the withdrawal in status `requested`, recording the API
+        key name and the caller's IP as the requester, and writes an audit-log entry.
       x-required-scope: withdrawals:write
+      x-requirements: [API-003, API-015, API-020, API-022, API-023, API-024, API-026, WDR-001a]
       x-error-codes:
         400: [invalid_request, missing_idempotency_key, invalid_asset, invalid_withdrawal, invalid_source]
         401: [unauthorized, invalid_totp]
@@ -403,7 +710,10 @@ paths:
         - name: Idempotency-Key
           in: header
           required: true
-          description: Caller-chosen unique withdrawal request key.
+          description: >-
+            Caller-chosen key that identifies this withdrawal request. Reuse it verbatim
+            when retrying a request whose response you did not receive; use a new one for
+            every genuinely new transfer.
           schema: {type: string, example: w-001}
       requestBody:
         required: true
@@ -412,10 +722,15 @@ paths:
             schema: {$ref: '#/components/schemas/CreateWithdrawalRequest'}
       responses:
         '200':
-          description: Idempotent replay; the existing withdrawal is returned without consuming TOTP again.
+          description: >-
+            Replay. The Idempotency-Key matched an existing request with identical
+            details, so that withdrawal is returned as-is; no second transfer was created
+            and the TOTP code was not consumed again.
           content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}
         '201':
-          description: New withdrawal row created.
+          description: >-
+            Accepted and stored in status `requested`. Signing and broadcast happen
+            asynchronously; poll `GET /api/v1/withdrawals/{id}` for the outcome.
           content: {application/json: {schema: {$ref: '#/components/schemas/Withdrawal'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -426,8 +741,19 @@ paths:
     get:
       tags: [Withdrawals]
       summary: List withdrawals
-      description: Requires scope `withdrawals:read`. Implements API-003, API-020, API-023, API-024, and API-025. The current handler validates `cursor` but does not apply it and returns no next cursor.
+      description: |
+        Lists withdrawal requests, newest first, optionally filtered to one exact `status`.
+
+        Requires scope `withdrawals:read`. Rate limit 10 requests/minute per API key, as
+        on every `/api/v1/withdrawals` path.
+
+        The response envelope is `{"items": [...]}` — note that it differs from the other
+        list endpoints, and that it carries **no `next_cursor`**. `limit` (1-200, default
+        50) is applied; `cursor` is validated if sent but has no effect, so this endpoint
+        cannot page beyond the most recent `limit` rows. Raise `limit` to see further
+        back, or fetch a specific row with `GET /api/v1/withdrawals/{id}`.
       x-required-scope: withdrawals:read
+      x-requirements: [API-003, API-020, API-023, API-024, API-025]
       x-error-codes:
         400: [invalid_pagination]
         401: [unauthorized]
@@ -441,7 +767,8 @@ paths:
           schema: {type: string, example: requested}
       responses:
         '200':
-          description: Withdrawal list. The handler uses the `items` envelope and emits no cursor.
+          description: >-
+            Withdrawals, newest first, in an `items` envelope with no cursor.
           content: {application/json: {schema: {$ref: '#/components/schemas/WithdrawalList'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -451,8 +778,25 @@ paths:
     get:
       tags: [Withdrawals]
       summary: Get the UTC-day withdrawal allowance
-      description: Requires scope `withdrawals:read`. Implements API-003, API-016, API-020, API-023, and API-024.
+      description: |
+        Reports how much of today's withdrawal allowance is left. Check this before
+        submitting a large withdrawal to avoid a 409 `daily_limit_exceeded`.
+
+        Requires scope `withdrawals:read`. Rate limit 10 requests/minute per API key, as
+        on every `/api/v1/withdrawals` path.
+
+        The window is the **UTC day** and resets at 00:00 UTC, not at local midnight.
+        `used_usd` is the exact sum of the USD value of every withdrawal created since
+        that boundary that is still requested, awaiting resources or energy, signing,
+        broadcast, or confirmed — the same set the limit itself counts, so this figure
+        always agrees with what a new request would be checked against. Failed and
+        cancelled withdrawals do not consume allowance. `remaining_usd` is
+        `daily_limit_usd` minus `used_usd`, never below zero.
+
+        Each withdrawal's USD value is fixed at the price when it was requested, so
+        `used_usd` does not move as the market does.
       x-required-scope: withdrawals:read
+      x-requirements: [API-003, API-016, API-020, API-023, API-024]
       x-error-codes:
         401: [unauthorized]
         429: [rate_limited]
@@ -476,8 +820,28 @@ paths:
     get:
       tags: [Withdrawals]
       summary: Get a withdrawal
-      description: Requires scope `withdrawals:read`. Implements API-003, API-017, API-020, API-023, and API-024.
+      description: |
+        Returns one withdrawal by its identifier. This is the endpoint to poll after a
+        successful `POST /api/v1/withdrawals`, since that call only records the request
+        and the transfer is signed and broadcast in the background.
+
+        Requires scope `withdrawals:read`. Rate limit 10 requests/minute per API key, as
+        on every `/api/v1/withdrawals` path.
+
+        The response is designed so any outcome can be explained without a block-explorer
+        lookup: `status` for where it stands, `txid` once broadcast, `failure_reason` and
+        the raw `broadcast_response` from the node when it did not work, `resolved_by`
+        when an operator closed it out, and a full cost breakdown in TRX
+        (`network_fee_trx`, `energy_cost_trx`, `bandwidth_cost_trx`, `resource_fee_trx`,
+        `total_cost_trx`) along with `energy_source` and `bandwidth_source` showing whether
+        the resources were burned, delegated or rented.
+
+        Remember there is no retry endpoint: a failed withdrawal stays failed, and a new
+        attempt means a new request with a new `Idempotency-Key`.
+
+        An unknown identifier is 404 `not_found`.
       x-required-scope: withdrawals:read
+      x-requirements: [API-003, API-017, API-020, API-023, API-024]
       x-error-codes:
         401: [unauthorized]
         404: [not_found]
@@ -495,8 +859,16 @@ paths:
     get:
       tags: [Operations]
       summary: Liveness probe
-      description: Requires no scope. Implements OPS-002.
+      description: |
+        Returns 200 `{"status": "ok"}` for as long as the process is running and able to
+        serve HTTP. Requires no scope. Needs no API key and is not rate limited.
+
+        It is deliberately unconditional: it says nothing about the database, the chain
+        follower, price freshness or any other worker, so a supervisor wired to this
+        endpoint restarts the process only when it is truly wedged. For "should this
+        instance receive traffic", use `/readyz` instead.
       x-required-scope: ''
+      x-requirements: [OPS-002]
       security: []
       responses:
         '200':
@@ -508,8 +880,39 @@ paths:
     get:
       tags: [Operations]
       summary: Readiness probe
-      description: Requires no scope. Implements OPS-001.
+      description: |
+        Reports whether the processor is healthy enough to be trusted right now. Returns
+        200 `{"status": "ready"}` when everything is in order, or **503**
+        `{"status": "degraded", "reasons": [...]}` when it is not. Requires no scope.
+        Needs no API key and is not rate limited.
+
+        Note this response uses its own shape in both cases — the 503 is a readiness
+        document, not the `{"error": {...}}` envelope the rest of the API returns.
+
+        Possible `reasons`:
+
+        - `database_unavailable` / `database_unwritable` — the SQLite store cannot be read
+          or cannot be written.
+        - `chain_lag` — the follower is more than 20 blocks behind the chain head, so
+          incoming payments are being detected late.
+        - `solidified_stale` — the irreversible block height has not advanced for five
+          minutes, so nothing can reach confirmed status.
+        - `reorg_depth_exceeded` — a chain reorganisation deeper than the configured
+          tolerance was seen and needs a human look.
+        - `price_stale` — the newest price quote is older than the configured staleness
+          limit. While this is set, orders priced in USD and all withdrawals are refused
+          with 503 `price_unavailable`.
+        - `clock_skew` / `clock_unavailable` — the local clock is more than 30 seconds off
+          the reference, or could not be checked. TOTP validation depends on it.
+        - `trongrid_quota_projection` — projected TronGrid API usage is at 90% or more of
+          the plan's quota, so the node access this depends on is about to be throttled.
+        - `energy_burn_ceiling` — withdrawals are burning more TRX for energy than the
+          configured ceiling allows.
+
+        Point load balancers and orchestrator readiness checks here; point restart-on-
+        failure supervisors at `/healthz`.
       x-required-scope: ''
+      x-requirements: [OPS-001]
       security: []
       responses:
         '200':
@@ -527,8 +930,26 @@ paths:
     get:
       tags: [Operations]
       summary: Prometheus metrics
-      description: Requires no scope. Implements the `/metrics` operation defined in REST API §15.4.
+      description: |
+        Prometheus text exposition of the processor's counters and gauges, served as
+        `text/plain; version=0.0.4`. Requires no scope. Needs no API key and is not rate
+        limited, on the assumption that the server binds a loopback or private interface.
+
+        Covers chain progress (`payd_chain_lag_blocks`, reorg counters), node access
+        (`payd_trongrid_requests_total`, `payd_trongrid_errors_total`,
+        `payd_trongrid_quota_projection_ratio`), business state (`payd_orders_total`,
+        `payd_payments_total`, `payd_payments_orphaned_unresolved`,
+        `payd_withdrawals_total`, `payd_withdrawals_needs_operator`), wallet health
+        (`payd_addresses_needing_resources`, `payd_balance_drift_addresses`), webhook
+        delivery (`payd_ipn_attempts_total`, `payd_ipn_dead_total`,
+        `payd_ipn_queue_depth`), and cost and freshness signals (`payd_energy_cost_trx_total`,
+        `payd_energy_fee_sun`, `payd_price_age_seconds`, `payd_clock_skew_seconds`).
+
+        Returns 503 if the metrics collector is not wired up or the underlying database
+        read fails. Unlike the 200, that error is converted to the standard JSON error
+        envelope on the way out.
       x-required-scope: ''
+      x-requirements: [OPS-003]
       security: []
       responses:
         '200':
@@ -541,8 +962,15 @@ paths:
     get:
       tags: [Documentation]
       summary: Download the embedded OpenAPI document
-      description: Requires no scope. Implements TD-007 by serving a dependency-free, embedded API description.
+      description: |
+        Serves this API description as OpenAPI 3.1 YAML. Requires no scope. Needs no API
+        key and is not rate limited.
+
+        The document is compiled into the binary, so it always matches the running build
+        and is available with no network access and nothing to deploy alongside it. Point
+        a client generator at this URL to produce a typed SDK.
       x-required-scope: ''
+      x-requirements: [TD-007]
       security: []
       responses:
         '200':
@@ -554,8 +982,20 @@ paths:
     get:
       tags: [Documentation]
       summary: Open Swagger UI
-      description: Requires no scope. Implements API-020 documentation by exposing the `apiKey` Authorize flow; UI assets load from jsDelivr.
+      description: |
+        Serves a Swagger UI page that renders `/openapi.yaml` and can issue live requests
+        against this server. Requires no scope. Needs no API key and is not rate limited.
+
+        Click **Authorize** and paste an API key to have the UI send `X-API-Key` on every
+        request; the key is remembered for the browser session. Requests made from this
+        page are real — they create real orders and real withdrawals against whatever
+        network this instance is configured for.
+
+        Only the HTML shell is served locally; the UI's JavaScript and CSS load from the
+        jsDelivr CDN, so the page needs internet access to render. The API itself has no
+        such dependency.
       x-required-scope: ''
+      x-requirements: [API-020]
       security: []
       responses:
         '200':
@@ -569,17 +1009,34 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key value (not its configured Argon2id key_hash). Implements API-020.
+      description: |
+        Send the API key itself in this header — the plaintext secret, not the Argon2id
+        `key_hash` that appears in the server's configuration file.
+
+        The server stores only the hash and verifies every request by recomputing it,
+        comparing in constant time. It never learns the key from configuration, and a
+        leaked configuration file does not yield usable keys.
+
+        Each key carries its own scopes. A missing header, an unknown key, and a valid key
+        lacking the scope an operation requires all return the same 401 `unauthorized`
+        with no detail about which it was — that is deliberate, so the response cannot be
+        used to probe for valid keys.
   parameters:
     Limit:
       name: limit
       in: query
-      description: Maximum number of rows to return (API-025).
+      description: >-
+        Maximum rows to return in this page. Values outside 1-200 are rejected with
+        400 `invalid_pagination`.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
     Cursor:
       name: cursor
       in: query
-      description: Opaque cursor returned by the preceding page (API-025).
+      description: >-
+        Position to resume from. Pass back the `next_cursor` returned by the previous
+        page, unmodified; omit it for the first page. Treat the value as opaque — its
+        encoding is not part of the contract. Anything that is not a cursor this API
+        issued is 400 `invalid_pagination`.
       schema: {type: string}
     OrderID:
       name: id
@@ -588,25 +1045,51 @@ components:
       schema: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
   responses:
     BadRequest:
-      description: Request validation failed; see the operation's `x-error-codes`.
+      description: >-
+        The request itself is wrong: malformed JSON, an unknown JSON field, a body over
+        1 MiB, a missing required field, or a value that fails validation. Fix the request
+        before retrying — repeating it unchanged gives the same result. The specific
+        `code` says which; each operation lists the ones it can return.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     Unauthorized:
-      description: Authentication, scope, or TOTP validation failed; see `x-error-codes`.
+      description: >-
+        The caller is not allowed to make this call. Returned for a missing or wrong
+        `X-API-Key`, for a valid key that lacks the scope this operation requires, and —
+        on withdrawal creation — for a TOTP code that is wrong or already used. The first
+        two are indistinguishable by design and return `unauthorized`; a TOTP failure
+        returns `invalid_totp`.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     NotFound:
-      description: The requested resource was not found (`not_found`).
+      description: >-
+        No such resource, or none that this operation can act on. Some operations also use
+        it for a resource that exists but is in the wrong state, so that a caller cannot
+        probe which identifiers are real.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     Conflict:
-      description: Request conflicts with stored state; see the operation's `x-error-codes`.
+      description: >-
+        The request is well-formed but disagrees with stored state — a reused idempotency
+        key with different values, an order that already received funds, a source address
+        flagged for drift, or a limit that would be exceeded. Read the `code` and act on
+        it; retrying the same request unchanged will not succeed.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     RateLimited:
-      description: Per-key rate limit exceeded (`rate_limited`, API-023).
+      description: >-
+        Too many requests from this API key inside the current one-minute window: 100 per
+        minute in general, 10 per minute on `/api/v1/withdrawals` and its subpaths. Windows
+        are fixed, not sliding, and counted per key, so other keys are unaffected. Wait for
+        the next minute and retry.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     InternalError:
-      description: Internal server error (`internal_error`).
+      description: >-
+        The processor failed unexpectedly. Nothing about the request needs changing; check
+        the server logs. Because writes are transactional, a request that failed this way
+        was either applied completely or not at all.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
     Unavailable:
-      description: Service or required dependency unavailable; see the operation's `x-error-codes`.
+      description: >-
+        The request is fine but the processor cannot serve it right now — no fresh price
+        quote, withdrawals turned off in configuration, or the address pool exhausted.
+        These are transient states worth retrying later, unlike a 400 or a 409.
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
     Error:
@@ -619,9 +1102,27 @@ components:
           additionalProperties: false
           required: [code, message, details]
           properties:
-            code: {type: string, example: insufficient_balance}
-            message: {type: string, example: confirmed balance is insufficient}
-            details: {type: object, additionalProperties: true}
+            code:
+              type: string
+              description: >-
+                Stable machine-readable identifier for what went wrong. Branch on this.
+                The set of codes an operation can return is listed under its
+                `x-error-codes` extension.
+              example: insufficient_balance
+            message:
+              type: string
+              description: >-
+                Human-readable explanation, for logs and operator consoles. Wording may
+                change between releases; never match on it.
+              example: confirmed balance is insufficient
+            details:
+              type: object
+              additionalProperties: true
+              description: >-
+                Extra machine-readable context for codes that have any, otherwise empty.
+                For `external_ref_conflict` it carries `fields`, the list of order
+                attributes that disagreed.
+              example: {}
     CreateOrderRequest:
       type: object
       additionalProperties: false
@@ -632,199 +1133,640 @@ components:
         - required: [amount_usd]
           not: {required: [amount]}
       properties:
-        asset: {type: string, example: USDT}
+        asset:
+          type: string
+          description: Symbol of a configured asset, such as `TRX` or `USDT`.
+          example: USDT
         amount:
           type: string
-          description: Positive asset amount; mutually exclusive with `amount_usd` (API-001, API-003).
+          description: >-
+            What the payer must send, in whole asset units, as a positive decimal string.
+            Supply this or `amount_usd`, never both.
           example: '1.5'
         amount_usd:
           type: string
-          description: Positive USD amount converted at the current price; mutually exclusive with `amount` (API-001, API-003).
+          description: >-
+            What the payer must send, expressed in USD as a positive decimal string and
+            converted at the current price. The converted value must land on a whole base
+            unit of the asset, otherwise the request is rejected. Supply this or `amount`,
+            never both.
           example: '1.50'
-        external_ref: {type: string, example: smoke-1}
-        consumer: {type: string, description: Defaults to `ipn.default_consumer` when empty., example: local}
-        ttl_seconds: {type: integer, format: int64, minimum: 0, example: 1800}
-        metadata: {description: Arbitrary JSON metadata., example: {user_id: 1}}
+        external_ref:
+          type: string
+          description: >-
+            Your own identifier for this order — an invoice or cart id. Sending it again
+            returns the existing order instead of creating a second one, provided the
+            asset, amount and consumer match. Omit it and every call creates a new order.
+          example: smoke-1
+        consumer:
+          type: string
+          description: >-
+            Which configured webhook consumer receives this order's payment events. Empty
+            uses the configured default consumer. Cannot be changed once the order exists.
+          example: local
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            How long the payer has to pay, in seconds, from now. 0 or absent uses the
+            configured default order TTL. After it elapses the order expires and its
+            address is recycled.
+          example: 1800
+        metadata:
+          description: >-
+            Any JSON object of your own. Stored verbatim, returned on every read of this
+            order, and included in its webhooks. Must be an object, not an array or scalar.
+          example: {user_id: 1}
     Order:
       type: object
       required: [id, address, asset, amount, received, overpaid, status, consumer, metadata, expires_at, created_at, updated_at]
       properties:
-        id: {type: string, example: 01KZK772CKH6G9KTEM09TB7AFS}
-        address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
-        asset: {type: string, example: USDT}
-        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1.5'}
-        received: {type: string, description: Human-readable attributed amount (API-003)., example: '0'}
-        overpaid: {type: string, description: Human-readable overpayment (API-003)., example: '0'}
-        status: {type: string, example: pending}
-        consumer: {type: string, example: local}
-        metadata: {description: Arbitrary JSON metadata., example: {user_id: 1}}
-        expires_at: {type: integer, format: int64, example: 1786279559}
-        created_at: {type: integer, format: int64, example: 1786277759}
-        updated_at: {type: integer, format: int64, example: 1786277759}
-        external_ref: {type: string, example: smoke-1}
-        price_usd: {type: string, description: Snapshotted USD price (API-003)., example: '1.00'}
-        amount_usd: {type: string, description: Snapshotted order value in USD (API-003)., example: '1.50'}
-        resolution: {type: string, example: refunded}
-        resolution_note: {type: string, example: Refunded manually}
-        resolved_at: {type: integer, format: int64, example: 1786280000}
+        id:
+          type: string
+          description: Order identifier, a ULID assigned by the processor.
+          example: 01KZK772CKH6G9KTEM09TB7AFS
+        address:
+          type: string
+          description: >-
+            The TRON address to pay, taken from the pool and held for this order until it
+            completes or expires. Show this to the payer.
+          example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+        asset:
+          type: string
+          description: Symbol of the asset the payer must send.
+          example: USDT
+        amount:
+          type: string
+          description: Amount due, in whole asset units, as a decimal string.
+          example: '1.5'
+        received:
+          type: string
+          description: >-
+            Total attributed to this order so far, in whole asset units. Counts payments
+            once detected, whether or not they are confirmed yet.
+          example: '0'
+        overpaid:
+          type: string
+          description: >-
+            How much arrived beyond `amount`, in whole asset units. Non-zero means the
+            payer sent too much and may be owed a refund.
+          example: '0'
+        status:
+          type: string
+          description: >-
+            Where the order stands. `pending` — nothing received. `partial` — some but not
+            all. `paid` — fully covered, awaiting block confirmations. `confirmed` — fully
+            covered and irreversible. `expired` / `cancelled` — finished with nothing
+            received. `expired_funded` / `cancelled_funded` — finished while holding money,
+            which needs an operator decision through
+            `POST /api/v1/orders/{id}/resolve`.
+          example: pending
+        consumer:
+          type: string
+          description: Webhook consumer receiving this order's payment events.
+          example: local
+        metadata:
+          description: The JSON object supplied at creation, returned verbatim.
+          example: {user_id: 1}
+        expires_at:
+          type: integer
+          format: int64
+          description: Unix seconds after which the order stops accepting payment.
+          example: 1786279559
+        created_at:
+          type: integer
+          format: int64
+          description: Unix seconds when the order was created.
+          example: 1786277759
+        updated_at:
+          type: integer
+          format: int64
+          description: Unix seconds of the last change to the order.
+          example: 1786277759
+        external_ref:
+          type: string
+          description: Your identifier for this order, if one was supplied.
+          example: smoke-1
+        price_usd:
+          type: string
+          description: >-
+            The asset's USD price at creation, as a decimal string. Frozen at that moment,
+            so later market movement does not change what the payer owes. Present only for
+            orders that involved a price.
+          example: '1.00'
+        amount_usd:
+          type: string
+          description: >-
+            The order's value in USD at creation, as a decimal string. Also what the daily
+            withdrawal cap and reporting use.
+          example: '1.50'
+        resolution:
+          type: string
+          description: >-
+            How an operator dealt with an order that finished while holding funds:
+            `refunded`, `written_off` or `reattributed`. Absent until resolved.
+          example: refunded
+        resolution_note:
+          type: string
+          description: Free-text note recorded with the resolution, such as a refund transaction id.
+          example: Refunded manually
+        resolved_at:
+          type: integer
+          format: int64
+          description: Unix seconds when the resolution was recorded.
+          example: 1786280000
     Payment:
       type: object
       additionalProperties: false
       required: [id, txid, log_index, direction, block_height, block_timestamp, from_address, to_address, order_id, asset, amount, status, detected_at, confirmed_at]
       properties:
-        id: {type: integer, format: int64, example: 42}
-        txid: {type: string, example: a17c9e}
-        log_index: {type: integer, example: 0}
-        direction: {type: string, example: in}
-        block_height: {type: integer, format: int64, example: 71234567}
-        block_timestamp: {type: integer, format: int64, example: 1786277800}
-        from_address: {type: string, example: TPayerAddress}
-        to_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
-        order_id: {type: [string, 'null'], example: 01KZK772CKH6G9KTEM09TB7AFS}
-        asset: {type: string, example: USDT}
-        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1.5'}
-        status: {type: string, example: confirmed}
-        detected_at: {type: integer, format: int64, example: 1786277805}
-        confirmed_at: {type: [integer, 'null'], format: int64, example: 1786277900}
+        id:
+          type: integer
+          format: int64
+          description: >-
+            Payment identifier assigned by the processor. This is the value to use in
+            `POST /api/v1/payments/{id}/attribute`, not the transaction hash.
+          example: 42
+        txid:
+          type: string
+          description: Hash of the transaction that carried this transfer, for explorer lookups.
+          example: a17c9e
+        log_index:
+          type: integer
+          description: >-
+            Position of this transfer within its transaction. One transaction can carry
+            several token transfers; together with `txid` this identifies exactly one.
+          example: 0
+        direction:
+          type: string
+          description: '`in` for funds arriving at a pooled address, `out` for funds leaving it.'
+          example: in
+        block_height:
+          type: integer
+          format: int64
+          description: Block that included the transaction.
+          example: 71234567
+        block_timestamp:
+          type: integer
+          format: int64
+          description: Unix seconds of that block, i.e. when the transfer happened on chain.
+          example: 1786277800
+        from_address:
+          type: string
+          description: Sender. For an inbound payment this is the payer, and the address to refund.
+          example: TPayerAddress
+        to_address:
+          type: string
+          description: Recipient, normally the pooled address assigned to an order.
+          example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+        order_id:
+          type: [string, 'null']
+          description: >-
+            Order this payment counts towards. Null while unattributed, which is what the
+            unattributed and orphaned listings return.
+          example: 01KZK772CKH6G9KTEM09TB7AFS
+        asset:
+          type: string
+          description: Symbol of the asset transferred.
+          example: USDT
+        amount:
+          type: string
+          description: Amount transferred, in whole asset units, as a decimal string.
+          example: '1.5'
+        status:
+          type: string
+          description: >-
+            `unattributed` — seen on chain but not yet tied to an order. `seen` — attributed
+            but not yet past the confirmation depth, so still reversible by a chain
+            reorganisation. `confirmed` — final. `orphaned` — cannot be attributed at all
+            and needs a human.
+          example: confirmed
+        detected_at:
+          type: integer
+          format: int64
+          description: Unix seconds when the processor first saw this transfer.
+          example: 1786277805
+        confirmed_at:
+          type: [integer, 'null']
+          format: int64
+          description: Unix seconds when it became irreversible; null until then.
+          example: 1786277900
     CreateWithdrawalRequest:
       type: object
       additionalProperties: false
       required: [from_address, to_address, asset, amount, totp]
       properties:
-        from_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
-        to_address: {type: string, example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA}
-        asset: {type: string, example: USDT}
-        amount: {type: string, description: Positive asset amount (API-003)., example: '1.0'}
+        from_address:
+          type: string
+          description: >-
+            Pooled address to send from. It must be known to the processor, not disabled,
+            not flagged for balance drift, and hold enough **confirmed** balance.
+          example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+        to_address:
+          type: string
+          description: >-
+            External TRON address to send to. Validated for format only — the processor
+            cannot tell you whether it is the right destination, and a transfer cannot be
+            recalled.
+          example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA
+        asset:
+          type: string
+          description: Symbol of a configured asset to send.
+          example: USDT
+        amount:
+          type: string
+          description: Amount to send, in whole asset units, as a positive decimal string.
+          example: '1.0'
         totp:
           type: string
           writeOnly: true
           pattern: '^[0-9]{6}$'
-          description: Single-use TOTP code (API-022). Request bodies containing TOTP codes are never logged (API-026).
+          description: >-
+            Six-digit code from the configured authenticator, when withdrawals are set to
+            require one. Accepted within one 30-second step either side of the current
+            code, and each code works once — its use is stored, so restarting the service
+            does not make it reusable. Retrying with the same `Idempotency-Key` does not
+            need a new code. Request bodies are never written to the logs, so codes do not
+            leak there.
           example: '482910'
     Withdrawal:
       type: object
       additionalProperties: false
       required: [id, from_address, to_address, asset, amount, amount_raw, amount_usd, status, txid, failure_reason, resolved_by, broadcast_response, fee_raw, network_fee_trx, energy_used, energy_source, energy_cost_trx, bandwidth_source, bandwidth_cost_trx, resource_fee_trx, total_cost_trx, last_lookup_error, created_at, broadcast_at, confirmed_at]
       properties:
-        id: {type: string, example: 01KZK8B5H1KM6XACMG7MK57J8W}
-        from_address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
-        to_address: {type: string, example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA}
-        asset: {type: string, example: USDT}
-        amount: {type: string, description: Human-readable asset amount (API-003)., example: '1'}
-        amount_raw: {type: string, description: Base-unit decimal string (DB-001)., example: '1000000'}
-        amount_usd: {type: string, description: USD value as a decimal string (API-003)., example: '1'}
-        status: {type: string, example: requested}
-        txid: {type: string, example: ''}
-        failure_reason: {type: string, example: ''}
-        resolved_by: {type: string, example: ''}
-        broadcast_response: {type: string, example: ''}
-        fee_raw: {type: string, description: SUN amount as a decimal string (DB-001)., example: '0'}
-        network_fee_trx: {type: string, description: TRX fee as a decimal string (API-003)., example: '0'}
-        energy_used: {type: integer, format: int64, example: 0}
-        energy_source: {type: string, example: ''}
-        energy_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
-        bandwidth_source: {type: string, example: ''}
-        bandwidth_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
-        resource_fee_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
-        total_cost_trx: {type: string, description: TRX amount as a decimal string (API-003)., example: '0'}
-        last_lookup_error: {type: string, example: ''}
-        created_at: {type: integer, format: int64, example: 1786279000}
-        broadcast_at: {type: [integer, 'null'], format: int64}
-        confirmed_at: {type: [integer, 'null'], format: int64}
+        id:
+          type: string
+          description: Withdrawal identifier, a ULID assigned by the processor.
+          example: 01KZK8B5H1KM6XACMG7MK57J8W
+        from_address:
+          type: string
+          description: Pooled address the funds leave.
+          example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+        to_address:
+          type: string
+          description: External address the funds go to.
+          example: TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA
+        asset:
+          type: string
+          description: Symbol of the asset being sent.
+          example: USDT
+        amount:
+          type: string
+          description: Amount to send, in whole asset units, as a decimal string.
+          example: '1'
+        amount_raw:
+          type: string
+          description: >-
+            The same amount in base units (SUN for TRX, 6-decimal units for USDT), as a
+            decimal string. This is the exact integer the signed transaction carries.
+          example: '1000000'
+        amount_usd:
+          type: string
+          description: >-
+            USD value fixed at the moment the request was accepted, as a decimal string.
+            This is what counts against the daily cap, so the cap does not move with the
+            market.
+          example: '1'
+        status:
+          type: string
+          description: >-
+            `requested` — accepted, nothing signed yet. `awaiting_resources` /
+            `awaiting_energy` — waiting for bandwidth or energy on the source address.
+            `signing` — being signed. `broadcast` — sent to the network, awaiting inclusion.
+            `confirmed` — final; the funds have left. `failed` — did not go out, see
+            `failure_reason`. `needs_operator` — the outcome could not be determined
+            automatically and a human must check the chain; this is the one status that
+            always warrants an alert.
+          example: requested
+        txid:
+          type: string
+          description: >-
+            Hash of the broadcast transaction, for explorer lookups. Empty until broadcast.
+          example: ''
+        failure_reason:
+          type: string
+          description: Why the withdrawal did not go out. Empty unless it failed.
+          example: ''
+        resolved_by:
+          type: string
+          description: >-
+            Who closed out a withdrawal that needed a human. Empty unless an operator acted.
+          example: ''
+        broadcast_response:
+          type: string
+          description: >-
+            The node's raw reply to the broadcast, kept verbatim for diagnosis when the
+            transfer was rejected. Empty otherwise.
+          example: ''
+        fee_raw:
+          type: string
+          description: >-
+            Fee the chain charged, in SUN, as a decimal string. Already includes any TRX
+            burned for energy or bandwidth.
+          example: '0'
+        network_fee_trx:
+          type: string
+          description: The same chain fee expressed in TRX, as a decimal string.
+          example: '0'
+        energy_used:
+          type: integer
+          format: int64
+          description: Energy the transaction consumed. Token transfers use energy; plain TRX transfers do not.
+          example: 0
+        energy_source:
+          type: string
+          description: >-
+            Where the energy came from — the account's own staked energy, a delegation, a
+            rental, or TRX burned to cover it. Empty until execution.
+          example: ''
+        energy_cost_trx:
+          type: string
+          description: TRX spent on energy, as a decimal string.
+          example: '0'
+        bandwidth_source:
+          type: string
+          description: >-
+            Where the bandwidth came from — free daily allowance, staked bandwidth, a
+            delegation, or TRX burned to cover it. Empty until execution.
+          example: ''
+        bandwidth_cost_trx:
+          type: string
+          description: TRX spent on bandwidth, as a decimal string.
+          example: '0'
+        resource_fee_trx:
+          type: string
+          description: Energy and bandwidth cost combined, in TRX, as a decimal string.
+          example: '0'
+        total_cost_trx:
+          type: string
+          description: >-
+            Everything this withdrawal cost in TRX — chain fee plus any rented resources —
+            as a decimal string. Burned energy and bandwidth are already inside the chain
+            fee and are not counted twice.
+          example: '0'
+        last_lookup_error:
+          type: string
+          description: >-
+            Why the most recent attempt to check this transaction on chain failed. A
+            populated value here means the status may be behind reality, not that the
+            withdrawal itself failed.
+          example: ''
+        created_at:
+          type: integer
+          format: int64
+          description: Unix seconds when the request was accepted.
+          example: 1786279000
+        broadcast_at:
+          type: [integer, 'null']
+          format: int64
+          description: Unix seconds when the transaction was sent to the network; null until then.
+        confirmed_at:
+          type: [integer, 'null']
+          format: int64
+          description: Unix seconds when it became irreversible; null until then.
     OrderList:
       type: object
       additionalProperties: false
       required: [orders, next_cursor]
       properties:
         orders: {type: array, items: {$ref: '#/components/schemas/Order'}}
-        next_cursor: {type: string, example: ''}
+        next_cursor:
+          type: string
+          description: >-
+            Pass back as `cursor` for the next page. Empty means this was the last page.
+          example: ''
     FundedOrder:
       allOf:
         - {$ref: '#/components/schemas/Order'}
         - type: object
           required: [payers]
           properties:
-            payers: {type: array, items: {type: string}}
+            payers:
+              type: array
+              items: {type: string}
+              description: >-
+                Distinct sender addresses of this order's inbound payments — where the
+                money came from, and so where a refund would go. Included here so the
+                operator queue is actionable without a chain lookup.
     FundedOrderList:
       type: object
       additionalProperties: false
       required: [orders, next_cursor]
       properties:
         orders: {type: array, items: {$ref: '#/components/schemas/FundedOrder'}}
-        next_cursor: {type: string, example: ''}
+        next_cursor:
+          type: string
+          description: >-
+            Pass back as `cursor` for the next page. Empty means this was the last page.
+          example: ''
     PaymentList:
       type: object
       additionalProperties: false
       required: [payments, next_cursor]
       properties:
         payments: {type: array, items: {$ref: '#/components/schemas/Payment'}}
-        next_cursor: {type: string, example: ''}
+        next_cursor:
+          type: string
+          description: >-
+            Pass back as `cursor` for the next page. Empty means this was the last page.
+          example: ''
     WithdrawalList:
       type: object
       additionalProperties: false
       required: [items]
       properties:
-        items: {type: array, items: {$ref: '#/components/schemas/Withdrawal'}}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Withdrawal'}
+          description: >-
+            Withdrawals, newest first. This listing does not page — there is no cursor, so
+            it returns at most `limit` rows.
     WithdrawalLimits:
       type: object
       additionalProperties: false
       required: [daily_limit_usd, used_usd, remaining_usd]
       properties:
-        daily_limit_usd: {type: string, description: USD amount (API-003)., example: '5000'}
-        used_usd: {type: string, description: USD amount (API-003)., example: '0'}
-        remaining_usd: {type: string, description: USD amount (API-003)., example: '5000'}
+        daily_limit_usd:
+          type: string
+          description: The configured cap on withdrawals per UTC day, in USD, as a decimal string.
+          example: '5000'
+        used_usd:
+          type: string
+          description: >-
+            USD value of withdrawals created since 00:00 UTC that are still in flight or
+            already confirmed, as a decimal string. Failed and cancelled ones do not count.
+          example: '0'
+        remaining_usd:
+          type: string
+          description: >-
+            What is still available today, as a decimal string. Never below zero. A
+            withdrawal worth more than this is refused with 409 `daily_limit_exceeded`.
+          example: '5000'
     WalletResourceList:
       type: object
       additionalProperties: false
       required: [addresses, total]
       properties:
-        addresses: {type: array, items: {$ref: '#/components/schemas/WalletResource'} }
-        total: {type: integer, minimum: 0, example: 0}
+        addresses:
+          type: array
+          items: {$ref: '#/components/schemas/WalletResource'}
+          description: Every address currently short of resources. Not paged.
+        total:
+          type: integer
+          minimum: 0
+          description: Number of entries in `addresses`. Zero means no address needs attention.
+          example: 0
     WalletResource:
       type: object
       additionalProperties: false
       required: [address, hd_index, balances, energy, bandwidth, trx_for_bandwidth_burn, can_withdraw, blocked_by, drift_detected]
       properties:
-        address: {type: string, example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH}
-        hd_index: {type: integer, format: int64, example: 7}
+        address:
+          type: string
+          description: The pooled TRON address this entry describes.
+          example: TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH
+        hd_index:
+          type: integer
+          format: int64
+          description: >-
+            Position of this address in the wallet's derivation path. Together with the
+            seed it is what regenerates the private key during recovery.
+          example: 7
         balances:
           type: array
+          description: What the address holds, one entry per asset.
           items:
             type: object
             required: [asset, confirmed, pending, drift_detected]
             properties:
               asset: {type: string, example: USDT}
-              confirmed: {type: string, description: Asset amount (API-003, API-014)., example: '142.5'}
-              pending: {type: string, description: Asset amount (API-003, API-014)., example: '0'}
-              usd: {type: string, description: USD amount (API-003)., example: '142.50'}
-              drift_detected: {type: boolean}
-        energy: {$ref: '#/components/schemas/ResourceState'}
-        bandwidth: {$ref: '#/components/schemas/ResourceState'}
-        trx_for_bandwidth_burn: {type: string, description: TRX amount (API-003)., example: '0'}
-        can_withdraw: {type: object, additionalProperties: {type: boolean}, example: {TRX: false, USDT: false}}
-        blocked_by: {type: array, items: {type: string}, example: [bandwidth]}
-        drift_detected: {type: boolean}
-        checked_at: {type: integer, format: int64, example: 1786279400}
-        estimated_burn_trx: {type: string, description: TRX amount (API-003, API-010)., example: '27.51'}
-        energy_fee_sun: {type: integer, format: int64, example: 210}
+              confirmed:
+                type: string
+                description: >-
+                  Balance backed by irreversible payments, in whole asset units. Only this
+                  can be withdrawn.
+                example: '142.5'
+              pending:
+                type: string
+                description: >-
+                  Balance from payments seen but not yet irreversible, in whole asset
+                  units. Reported separately and never spendable, because a chain
+                  reorganisation can still take it away.
+                example: '0'
+              usd:
+                type: string
+                description: >-
+                  Value of the confirmed balance in USD. Omitted rather than estimated when
+                  no fresh price quote is available.
+                example: '142.50'
+              drift_detected:
+                type: boolean
+                description: >-
+                  True when the computed balance for this asset disagrees with the chain.
+                  Blocks withdrawals from the address until cleared.
+        energy:
+          $ref: '#/components/schemas/ResourceState'
+          description: >-
+            Energy position. Token transfers consume energy; a plain TRX transfer does not.
+        bandwidth:
+          $ref: '#/components/schemas/ResourceState'
+          description: Bandwidth position. Every transaction consumes bandwidth.
+        trx_for_bandwidth_burn:
+          type: string
+          description: >-
+            Confirmed TRX held, in whole units — the fallback for paying bandwidth by
+            burning when the address has none staked or delegated.
+          example: '0'
+        can_withdraw:
+          type: object
+          additionalProperties: {type: boolean}
+          description: >-
+            Per asset, whether a withdrawal could go out right now. True requires no
+            balance drift, bandwidth covered (held or burnable with TRX), and — for token
+            assets only — enough energy.
+          example: {TRX: false, USDT: false}
+        blocked_by:
+          type: array
+          items: {type: string}
+          description: Which resources are short — `bandwidth`, `energy`, or both.
+          example: [bandwidth]
+        drift_detected:
+          type: boolean
+          description: >-
+            True when any asset on this address is flagged for balance drift. All
+            withdrawals from it are refused with 409 `balance_drift` until an operator
+            clears the flag.
+        checked_at:
+          type: integer
+          format: int64
+          description: Unix seconds when this address was last polled on chain. Absent if never polled.
+          example: 1786279400
+        estimated_burn_trx:
+          type: string
+          description: >-
+            TRX that a transfer would burn at the current on-chain energy price, if the
+            address covered its resources by burning. Present once chain parameters have
+            been read.
+          example: '27.51'
+        energy_fee_sun:
+          type: integer
+          format: int64
+          description: >-
+            The network's current price per unit of energy, in SUN. Set by chain
+            governance and can change, which is why `estimated_burn_trx` is recomputed
+            rather than assumed.
+          example: 210
     ResourceState:
       type: object
       additionalProperties: false
       required: [available, limit, required, sufficient]
       properties:
-        available: {type: integer, format: int64, example: 0}
-        limit: {type: integer, format: int64, example: 0}
-        required: {type: integer, format: int64, example: 131000}
-        sufficient: {type: boolean, example: false}
+        available:
+          type: integer
+          format: int64
+          description: Units left to spend right now, i.e. the allowance minus what has been used.
+          example: 0
+        limit:
+          type: integer
+          format: int64
+          description: >-
+            Total units the account is granted per period, from staking, delegation and
+            the free daily allowance.
+          example: 0
+        required:
+          type: integer
+          format: int64
+          description: Units a transfer needs, per configuration, for this address to count as ready.
+          example: 131000
+        sufficient:
+          type: boolean
+          description: Whether `available` currently meets `required`.
+          example: false
     Health:
       type: object
       additionalProperties: false
       required: [status]
-      properties: {status: {type: string, const: ok}}
+      properties:
+        status:
+          type: string
+          const: ok
+          description: Always `ok` — the process answered, which is all this probe asserts.
     Readiness:
       type: object
       additionalProperties: false
       required: [status]
       properties:
-        status: {type: string, enum: [ready, degraded]}
-        reasons: {type: array, items: {type: string}, example: [price_stale]}
+        status:
+          type: string
+          enum: [ready, degraded]
+          description: >-
+            `ready` when every dependency is healthy, `degraded` when at least one is not.
+            `degraded` is returned with HTTP 503.
+        reasons:
+          type: array
+          items: {type: string}
+          description: >-
+            Which checks are failing, when degraded. Absent or empty when ready. See the
+            `/readyz` description for what each value means.
+          example: [price_stale]
