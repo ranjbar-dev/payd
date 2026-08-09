@@ -1,0 +1,100 @@
+server:
+  listen: "127.0.0.1:8080"
+  read_timeout: 15s
+  write_timeout: 30s
+database:
+  path: "payd.db"
+wallet:
+  seed_file: "seed.age"
+  account: 0
+  pool_initial_size: 5
+  pool_min_free: 5
+  pool_max_size: 500
+  cooldown: 2h
+tron:
+  endpoints:
+    - url: "https://nile.trongrid.io"
+      api_key: "8e91c81f-81a6-4294-b3d5-31f88240222e" 
+      weight: 100
+    - url: "https://tron-mainnet.gateway.tatum.io"
+      api_key: ""
+      weight: 10
+  solidity_url: "https://api.trongrid.io"
+  poll_interval: 3s
+  confirmations_required: 19
+  reorg_depth: 64
+  request_timeout: 10s
+  daily_request_quota: 100000
+assets:
+  - symbol: "TRX"
+    kind: "native"
+    decimals: 6
+    verified: true
+  - symbol: "USDT"
+    kind: "trc20"
+    contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    decimals: 6
+    min_deposit: "0.5"
+    verified: true
+orders:
+  default_ttl: 30m
+  underpayment_policy: "partial"
+  overpayment_policy: "credit_and_log"
+ipn:
+  consumers:
+    - name: "local"
+      url: "http://127.0.0.1:9090/ipn"
+      secret: "replace-with-a-unique-secret"
+      receives_global: true
+      enabled: true
+  default_consumer: "local"
+  timeout: 10s
+  max_attempts: 2
+  workers: 1
+  backoff: [10s, 30s]
+energy:
+  enabled: false
+  provider: ""
+  api_url: ""
+  api_key: ""
+  api_secret: ""
+  timeout: 15s
+  rent_amount: 0
+  rent_duration: 0s
+  max_price_trx: ""
+  balance_warn_trx: ""
+  poll_interval: 0s
+  poll_timeout: 0s
+  fallback_to_burn: true
+  max_burn_trx: "60"
+price:
+  provider: "binance"
+  url: "https://data-api.binance.vision/api/v3/ticker/price"
+  interval: 60s
+  pairs: ["TRXUSDT"]
+  stale_after: 5m
+resources:
+  min_energy: 131000
+  min_bandwidth: 345
+  check_interval: 5m
+  slow_check_interval: 6h
+  poll_threshold_usd: "10"
+  max_polled_addresses: 50
+  resource_wallet_index: 1000
+  bandwidth_strategy: "topup"
+  bandwidth_topup_trx: "2"
+withdrawal:
+  enabled: true
+  daily_limit_usd: "5000"
+  fee_limit_trx: 100
+  expiration: 60s
+  require_totp: true
+auth:
+  api_keys:
+    - name: "local"
+      key_hash: "argon2id$v=19$m=65536,t=3,p=2$gLDB9FTfDI2HFA7RYxmhPQ$gPrhc8FEkaQYaMcUp3vSyi9UjDc8v+yKp7vHYVkv3yI" # api key: 45k653AmthF070ei0qzifoGXIPfjyqNXpeXG-UNtAb0
+      scopes: ["orders:write"]
+  totp_secret: "W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT"  # run ./paydev totp W4GJIBZ5VLM7HAUQPYNVSPHXLRZENCDT to get the current TOTP code 
+log:
+  level: "info"
+  format: "console"
