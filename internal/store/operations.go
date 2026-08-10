@@ -25,6 +25,16 @@ func (s *Store) RecordTronGridRequest(ctx context.Context, at time.Time) (int64,
 	return requests, err
 }
 
+// PersistTronGridRequestCount stores a monotonic in-memory snapshot. M12 keeps
+// this write off the TronGrid request path while preserving RL-006 across restarts.
+func (s *Store) PersistTronGridRequestCount(ctx context.Context, dayStart, requests int64, at time.Time) error {
+	_, err := s.normal.ExecContext(ctx, `INSERT INTO trongrid_daily_requests(day_start,requests,updated_at)
+		VALUES (?,?,?) ON CONFLICT(day_start) DO UPDATE SET
+		requests=MAX(requests,excluded.requests),updated_at=excluded.updated_at`,
+		dayStart, requests, at.UTC().Unix())
+	return err
+}
+
 func (s *Store) TronGridRequestHistory(ctx context.Context, now time.Time) ([]TronGridDailyRequests, error) {
 	today := now.UTC().Truncate(24 * time.Hour)
 	rows, err := s.normal.QueryContext(ctx, `SELECT day_start,requests FROM trongrid_daily_requests

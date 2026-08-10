@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -112,7 +113,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	parameterWorker, err := chain.NewParameterWorker(chainClient.Read, db, logger, cfg.Energy.MaxBurnTRX)
+	parameterWorker, err := chain.NewParameterWorker(chainClient.Read, db, logger, cfg.Energy.MaxBurnTRX, cfg.Resources.MinEnergy)
 	if err != nil {
 		return err
 	}
@@ -163,7 +164,11 @@ func run(args []string) error {
 	operations := ops.New(db, chainClient, followerWorker, ipnWorker, cfg)
 	apiServer.SetOperations(operations.Ready, operations)
 	var workers sync.WaitGroup
-	workers.Add(9)
+	workers.Add(10)
+	go func() {
+		defer workers.Done()
+		chainClient.RunRequestCounter(ctx)
+	}()
 	go func() {
 		defer workers.Done()
 		priceWorker.Run(ctx)
@@ -241,7 +246,7 @@ func run(args []string) error {
 				logger.Error("config reload rejected", "error", err)
 				continue
 			}
-			if err := parameterWorker.UpdateMaxBurnTRX(ctx, next.Energy.MaxBurnTRX); err != nil {
+			if err := parameterWorker.UpdateBurnCeiling(ctx, next.Energy.MaxBurnTRX, next.Resources.MinEnergy); err != nil {
 				logger.Error("config reload rejected", "error", err)
 				continue
 			}
@@ -300,9 +305,19 @@ func newLogger(cfg config.Log) *slog.Logger {
 }
 
 func logAssets(logger *slog.Logger, assets []config.Asset) {
-	for _, asset := range assets {
-		logger.Warn("verified asset configured", "symbol", asset.Symbol, "contract", asset.Contract, "decimals", asset.Decimals) // CFG-014
+	type loggedAsset struct {
+		Symbol   string `json:"symbol"`
+		Contract string `json:"contract"`
+		Decimals int    `json:"decimals"`
 	}
+	configured := make([]loggedAsset, len(assets))
+	for i, asset := range assets {
+		configured[i].Symbol = asset.Symbol
+		configured[i].Contract = asset.Contract
+		configured[i].Decimals = asset.Decimals
+	}
+	slices.SortFunc(configured, func(a, b loggedAsset) int { return strings.Compare(a.Symbol, b.Symbol) })
+	logger.Info("verified assets configured", "assets", configured) // CFG-014
 }
 
 func energyProviderReachable(logger *slog.Logger, cfg config.Energy) bool {

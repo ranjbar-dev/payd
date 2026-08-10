@@ -98,19 +98,19 @@ func TestOpenAPIRoutesAndScopesMatchRouteTables(t *testing.T) {
 	}
 }
 
-func TestDocumentationRoutesNeedNoAuthentication(t *testing.T) {
+func TestOpenAPIDocumentIsPublicAndDocsRouteIsGone(t *testing.T) {
 	server, _, cleanup := testServer(t, 1)
 	defer cleanup()
 
-	for target, want := range map[string][2]string{
-		"/openapi.yaml": {"application/yaml", "openapi: 3.1.0"},
-		"/docs":         {"text/html; charset=utf-8", "SwaggerUIBundle"},
-	} {
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
-		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != want[0] || !strings.Contains(response.Body.String(), want[1]) {
-			t.Fatalf("%s = %d %q %q", target, response.Code, response.Header().Get("Content-Type"), response.Body.String())
-		}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/yaml" || !strings.Contains(response.Body.String(), "openapi: 3.1.0") {
+		t.Fatalf("openapi document = %d %q %q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+
+	removed := request(t, server.Handler(), http.MethodGet, "/docs", "")
+	if removed.Code != http.StatusNotFound {
+		t.Fatalf("removed docs route = %d %s", removed.Code, removed.Body.String())
 	}
 }
 
@@ -205,7 +205,7 @@ func TestReadyDegradesForUnsafeBurnCeilingWithoutAuthentication(t *testing.T) {
 	}
 }
 
-func TestHealthMetricsAndOperationalReadinessNeedNoAuthentication(t *testing.T) {
+func TestMetricsRequiresAuthenticationWhileProbesRemainPublic(t *testing.T) {
 	server, _, cleanup := testServer(t, 2)
 	defer cleanup()
 	server.SetOperations(func(context.Context) []string { return []string{"clock_skew"} },
@@ -217,7 +217,6 @@ func TestHealthMetricsAndOperationalReadinessNeedNoAuthentication(t *testing.T) 
 	}{
 		"/healthz": {http.StatusOK, `"status":"ok"`},
 		"/readyz":  {http.StatusServiceUnavailable, "clock_skew"},
-		"/metrics": {http.StatusOK, "payd_clock_skew_seconds 40"},
 	} {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
 		response := httptest.NewRecorder()
@@ -225,6 +224,16 @@ func TestHealthMetricsAndOperationalReadinessNeedNoAuthentication(t *testing.T) 
 		if response.Code != want.code || !strings.Contains(response.Body.String(), want.body) {
 			t.Fatalf("%s = %d %s", target, response.Code, response.Body.String())
 		}
+	}
+
+	unauthenticated := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated metrics = %d %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+	authenticated := requestWithKey(t, server.Handler(), http.MethodGet, "/metrics", "", testNoScopeAPIKey)
+	if authenticated.Code != http.StatusOK || !strings.Contains(authenticated.Body.String(), "payd_clock_skew_seconds 40") {
+		t.Fatalf("authenticated metrics = %d %s", authenticated.Code, authenticated.Body.String())
 	}
 }
 
@@ -358,6 +367,49 @@ func TestAuthPaginationAndPaymentRoutes(t *testing.T) {
 	}
 }
 
+func TestNormalizeErrorsStreamsSuccessAndNormalizesErrors(t *testing.T) {
+	t.Run("success streams", func(t *testing.T) {
+		server := &Server{}
+		recorder := httptest.NewRecorder()
+		streamed := false
+		handler := server.normalizeErrors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Test", "streamed")
+			_, _ = w.Write([]byte("chunk"))
+			streamed = recorder.Body.String() == "chunk"
+		}))
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		if !streamed || recorder.Code != http.StatusOK || recorder.Header().Get("X-Test") != "streamed" {
+			t.Fatalf("streamed=%t status=%d headers=%v body=%q", streamed, recorder.Code, recorder.Header(), recorder.Body.String())
+		}
+	})
+
+	t.Run("empty success", func(t *testing.T) {
+		server := &Server{}
+		recorder := httptest.NewRecorder()
+		handler := server.normalizeErrors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Test", "empty")
+		}))
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		if recorder.Code != http.StatusOK || recorder.Header().Get("X-Test") != "empty" || recorder.Body.Len() != 0 {
+			t.Fatalf("status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+		}
+	})
+
+	t.Run("error is normalized", func(t *testing.T) {
+		server := &Server{}
+		recorder := httptest.NewRecorder()
+		handler := server.normalizeErrors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("raw error"))
+		}))
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
+		if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), `"code":"not_found"`) || strings.Contains(recorder.Body.String(), "raw error") {
+			t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+	})
+}
+
 // API-023 keeps ordinary and fund-moving route budgets separate per key.
 func TestPerKeyRateLimits(t *testing.T) {
 	server := &Server{rates: make(map[string]rateWindow)}
@@ -389,6 +441,62 @@ func TestPerKeyRateLimits(t *testing.T) {
 	}
 }
 
+func TestPreAuthRateLimitAndEviction(t *testing.T) {
+	for _, remoteAddr := range []string{"192.0.2.1:%d", "[2001:db8::1]:%d"} {
+		t.Run(remoteAddr, func(t *testing.T) {
+			server := &Server{rates: map[string]rateWindow{
+				"stale\x00preauth": {started: time.Now().Add(-2 * time.Minute), count: 1},
+			}}
+			calls := 0
+			handler := server.rateLimit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				writeError(w, http.StatusUnauthorized, "unauthorized", "authentication failed", nil)
+			}))
+			call := func(port int) int {
+				recorder := httptest.NewRecorder()
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/orders", nil)
+				request.RemoteAddr = fmt.Sprintf(remoteAddr, port)
+				request = request.WithContext(context.WithValue(request.Context(), stateContextKey, &requestState{}))
+				handler.ServeHTTP(recorder, request)
+				return recorder.Code
+			}
+			for port := 1; port <= 10; port++ {
+				if status := call(port); status != http.StatusUnauthorized {
+					t.Fatalf("request %d = %d", port, status)
+				}
+			}
+			if status := call(11); status != http.StatusTooManyRequests || calls != 10 {
+				t.Fatalf("11th request = %d, auth calls = %d", status, calls)
+			}
+			if _, found := server.rates["stale\x00preauth"]; found {
+				t.Fatal("stale rate window was not evicted")
+			}
+		})
+	}
+}
+
+func TestPreAuthLimitReleasesAuthenticatedRequests(t *testing.T) {
+	server := &Server{rates: make(map[string]rateWindow)}
+	inner := server.rateLimit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	authenticate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		state := requestStateFrom(r.Context())
+		state.keyName = "test"
+		inner.ServeHTTP(w, r)
+	})
+	handler := server.rateLimit(authenticate)
+	for i := 1; i <= 11; i++ {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/orders", nil)
+		request = request.WithContext(context.WithValue(request.Context(), stateContextKey, &requestState{}))
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("authenticated request %d = %d", i, recorder.Code)
+		}
+	}
+}
+
 func TestBalanceDriftMapsToConflictAndCanBeCleared(t *testing.T) {
 	server, database, cleanup := testServer(t, 1)
 	defer cleanup()
@@ -411,7 +519,8 @@ func TestBalanceDriftMapsToConflictAndCanBeCleared(t *testing.T) {
 	if _, status, code, err := server.ValidateWithdrawalSource(ctx, address, "USDT"); !errors.Is(err, store.ErrBalanceDrift) || status != http.StatusConflict || code != "balance_drift" {
 		t.Fatalf("drift validation = status %d code %q err %v", status, code, err)
 	}
-	cleared := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/"+address+"/clear-drift", "")
+	cleared := operatorRequest(server.Handler(), "/api/v1/wallets/"+address+"/clear-drift",
+		`{"asset":"USDT","chain_raw":"2"}`, operatorTOTP(t, 0))
 	if cleared.Code != http.StatusOK {
 		t.Fatalf("clear drift = %d %s", cleared.Code, cleared.Body.String())
 	}
@@ -505,10 +614,12 @@ func TestTierANewRoutesRequireAuthenticationAndScopes(t *testing.T) {
 		{http.MethodGet, "/api/v1/energy/status", false},
 		{http.MethodGet, "/api/v1/energy/purchases", false},
 	}
-	for _, route := range routes {
+	for i, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			missing := httptest.NewRecorder()
-			server.Handler().ServeHTTP(missing, httptest.NewRequest(route.method, route.path, nil))
+			request := httptest.NewRequest(route.method, route.path, nil)
+			request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", i+1)
+			server.Handler().ServeHTTP(missing, request)
 			if missing.Code != http.StatusUnauthorized {
 				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
 			}
@@ -593,12 +704,14 @@ func TestA5DelegateWalletUsesEngine(t *testing.T) {
 	addresses, _ := database.WalletAddresses(context.Background(), false)
 	fake := &fakeResourceDelegator{}
 	server.SetDelegator(fake)
-	response := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/"+addresses[0].Address+"/delegate", `{"resource_type":"ENERGY","amount":131000}`)
+	response := operatorRequest(server.Handler(), "/api/v1/wallets/"+addresses[0].Address+"/delegate",
+		`{"resource_type":"ENERGY","amount":131000}`, operatorTOTP(t, 0))
 	if response.Code != http.StatusAccepted || fake.address != addresses[0].Address || fake.resourceType != "ENERGY" || fake.amount != 131000 || fake.actor != "test" {
 		t.Fatalf("delegate = %d %s fake=%+v", response.Code, response.Body.String(), fake)
 	}
 	server.SetDelegator(&fakeResourceDelegator{err: store.ErrAddressNotFound})
-	unknown := request(t, server.Handler(), http.MethodPost, "/api/v1/wallets/TUnknown/delegate", `{"resource_type":"BANDWIDTH","amount":345}`)
+	unknown := operatorRequest(server.Handler(), "/api/v1/wallets/TUnknown/delegate",
+		`{"resource_type":"BANDWIDTH","amount":345}`, operatorTOTP(t, 1))
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("delegate unknown = %d %s", unknown.Code, unknown.Body.String())
 	}
@@ -1060,10 +1173,12 @@ func TestTierBRouteAuthenticationAndScopes(t *testing.T) {
 		{http.MethodPost, "/api/v1/ipn/test", false},
 		{http.MethodPost, "/api/v1/ipn/replay", false},
 	}
-	for _, route := range routes {
+	for i, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			missing := httptest.NewRecorder()
-			server.Handler().ServeHTTP(missing, httptest.NewRequest(route.method, route.path, nil))
+			request := httptest.NewRequest(route.method, route.path, nil)
+			request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", i+1)
+			server.Handler().ServeHTTP(missing, request)
 			if missing.Code != http.StatusUnauthorized {
 				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
 			}
@@ -1337,10 +1452,12 @@ func TestTierCRouteAuthenticationAndScopes(t *testing.T) {
 	routes := []string{"/api/v1/chain/status", "/api/v1/chain/quota", "/api/v1/workers", "/api/v1/audit",
 		"/api/v1/resources/grants", "/api/v1/resources/wallet", "/api/v1/config", "/api/v1/reports/volume",
 		"/api/v1/reports/fees", "/api/v1/export/orders.csv", "/api/v1/export/withdrawals.csv"}
-	for _, target := range routes {
+	for i, target := range routes {
 		t.Run(target, func(t *testing.T) {
 			missing := httptest.NewRecorder()
-			server.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, target, nil))
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", i+1)
+			server.Handler().ServeHTTP(missing, request)
 			if missing.Code != http.StatusUnauthorized {
 				t.Fatalf("missing key = %d %s", missing.Code, missing.Body.String())
 			}

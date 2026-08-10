@@ -20,7 +20,13 @@
 | OPS-007 | `payd_addresses_with_balance` MUST be tracked over time, since it is the growth driver behind RES-001a and RL-006 |
 | OPS-008 | **Every worker MUST write one `worker_health` row per tick** — `last_tick_at` on every tick, `last_error` and an incremented `error_count` on a failing one — and that write is the table's only writer. `last_tick_at` is what makes a wedged loop detectable: a worker that stops ticking is otherwise indistinguishable from an idle one, and a stalled Confirmation Tracker leaves payments in `seen` and orders never reaching `confirmed` with nothing anywhere reporting a fault. `last_error` MUST be sticky rather than cleared on the next success, so a fault that has already recovered is still visible to the operator who arrives afterwards; `last_tick_at` freshness alongside a flat `error_count` is what distinguishes "failing now" from "failed once". A cancelled tick is shutdown, not a fault, and MUST NOT increment `error_count`. v1.2 defined the table and the `GET /workers` endpoint over it but named no writer, so the endpoint returned an empty list on every deployment |
 
-## 17.2 Backup and recovery
+## 17.2 Transport security
+
+| ID | Requirement |
+|---|---|
+| OPS-009 | `payd` MUST NOT be exposed directly for remote access because it serves plain HTTP and API keys and TOTP codes travel in headers. Remote clients MUST connect through a TLS-terminating reverse proxy; set `server.trusted_proxy: true` only after that proxy is in place (CFG-016). Loopback-only deployments MUST leave it `false` |
+
+## 17.3 Backup and recovery
 
 | ID | Requirement |
 |---|---|

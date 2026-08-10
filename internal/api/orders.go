@@ -77,12 +77,25 @@ func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
+	limit, cursor, err := pagination(r, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
+		return
+	}
+	after := int64(0)
+	if cursor != "" {
+		after, _ = strconv.ParseInt(cursor, 10, 64)
+		if after < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_pagination", "cursor is invalid", nil)
+			return
+		}
+	}
 	order, err := s.store.Order(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeOrderError(w, err)
 		return
 	}
-	paymentRows, err := s.store.OrderPayments(r.Context(), order.ID)
+	paymentRows, err := s.store.OrderPayments(r.Context(), order.ID, after, limit+1)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
 		return
@@ -92,7 +105,12 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
 		return
 	}
-	response["payments"] = s.paymentJSON(paymentRows)
+	next := ""
+	if len(paymentRows) > limit {
+		next = encodeCursor(strconv.FormatInt(paymentRows[limit-1].ID, 10))
+	}
+	response["payments"] = s.paymentJSON(paymentRows[:min(len(paymentRows), limit)])
+	response["next_cursor"] = next
 	writeJSON(w, http.StatusOK, response)
 }
 

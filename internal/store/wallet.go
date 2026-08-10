@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-var ErrBalanceDrift = errors.New("balance drift detected")
+var (
+	ErrBalanceDrift        = errors.New("balance drift detected")
+	ErrBalanceDriftChanged = errors.New("balance drift acknowledgement does not match")
+)
 
 type WalletBalance struct {
 	Asset        string
@@ -58,14 +61,33 @@ type ChainBalance struct {
 
 // WalletAddresses is the common read model for monitoring and the wallet API.
 func (s *Store) WalletAddresses(ctx context.Context, needsResourcesOnly bool) ([]WalletAddress, error) {
+	return s.walletAddressPage(ctx, needsResourcesOnly, false, 0, 0)
+}
+
+// WalletAddressPage bounds API reads by address rather than joined balance rows (API-025).
+func (s *Store) WalletAddressPage(ctx context.Context, needsResourcesOnly bool, after int64, limit int) ([]WalletAddress, error) {
+	return s.walletAddressPage(ctx, needsResourcesOnly, false, after, limit)
+}
+
+func (s *Store) walletAddressPage(ctx context.Context, needsResourcesOnly, confirmedOnly bool, after int64, limit int) ([]WalletAddress, error) {
+	selector := "SELECT a.id FROM addresses a WHERE a.id > ?"
+	args := []any{after}
+	if needsResourcesOnly {
+		selector += " AND a.needs_resources = 1"
+	}
+	if confirmedOnly {
+		selector += " AND EXISTS (SELECT 1 FROM balances funded WHERE funded.address_id = a.id AND funded.confirmed_raw <> '0')"
+	}
+	selector += " ORDER BY a.id"
+	if limit > 0 {
+		selector += " LIMIT ?"
+		args = append(args, limit)
+	}
 	query := `SELECT a.id, a.hd_index, a.address, a.state, a.energy_limit, a.energy_used,
         a.bandwidth_limit, a.bandwidth_used, a.needs_resources, a.resources_checked_at,
         b.asset, b.confirmed_raw, b.pending_raw, b.chain_raw, b.drift_detected
-        FROM addresses a LEFT JOIN balances b ON b.address_id = a.id`
-	args := []any{}
-	if needsResourcesOnly {
-		query += " WHERE a.needs_resources = 1"
-	}
+		FROM addresses a JOIN (` + selector + `) page ON page.id = a.id
+		LEFT JOIN balances b ON b.address_id = a.id`
 	return s.walletAddresses(ctx, query, args)
 }
 
@@ -86,24 +108,12 @@ func (s *Store) WalletAddress(ctx context.Context, address string) (WalletAddres
 
 // WalletAddressesWithConfirmedBalance returns withdrawal sources only; pending funds are never spendable (WDR-005).
 func (s *Store) WalletAddressesWithConfirmedBalance(ctx context.Context) ([]WalletAddress, error) {
-	addresses, err := s.WalletAddresses(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	funded := addresses[:0]
-	for _, address := range addresses {
-		for _, balance := range address.Balances {
-			amount, ok := new(big.Int).SetString(balance.ConfirmedRaw, 10)
-			if !ok {
-				return nil, fmt.Errorf("invalid stored confirmed balance %q for address %d", balance.ConfirmedRaw, address.ID)
-			}
-			if amount.Sign() != 0 {
-				funded = append(funded, address)
-				break
-			}
-		}
-	}
-	return funded, nil
+	return s.walletAddressPage(ctx, false, true, 0, 0)
+}
+
+// WalletAddressesWithConfirmedBalancePage returns a bounded withdrawal-source page (WDR-005, API-025).
+func (s *Store) WalletAddressesWithConfirmedBalancePage(ctx context.Context, after int64, limit int) ([]WalletAddress, error) {
+	return s.walletAddressPage(ctx, false, true, after, limit)
 }
 
 func (s *Store) walletAddresses(ctx context.Context, query string, args []any) ([]WalletAddress, error) {
@@ -253,7 +263,12 @@ func (s *Store) BalanceForWithdrawal(ctx context.Context, address, asset string)
 	return balance, nil
 }
 
-func (s *Store) ClearBalanceDrift(ctx context.Context, address, actor, ip string, now time.Time) error {
+func (s *Store) ClearBalanceDrift(ctx context.Context, address, asset, expectedChainRaw, actor, ip string, now time.Time) error {
+	chain, ok := new(big.Int).SetString(expectedChainRaw, 10)
+	if !ok || chain.Sign() < 0 {
+		return ErrBalanceDriftChanged
+	}
+	expectedChainRaw = chain.String()
 	tx, err := s.normal.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin clear balance drift: %w", err)
@@ -265,7 +280,9 @@ func (s *Store) ClearBalanceDrift(ctx context.Context, address, actor, ip string
 	} else if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE balances SET drift_detected = 0 WHERE address_id = ? AND drift_detected = 1", addressID)
+	// BAL-002: acknowledge one exact reconciled asset value; another reconcile cannot be cleared by a stale review.
+	result, err := tx.ExecContext(ctx, `UPDATE balances SET drift_detected = 0
+		WHERE address_id = ? AND asset = ? AND chain_raw = ? AND drift_detected = 1`, addressID, asset, expectedChainRaw)
 	if err != nil {
 		return fmt.Errorf("clear balance drift: %w", err)
 	}
@@ -273,7 +290,10 @@ func (s *Store) ClearBalanceDrift(ctx context.Context, address, actor, ip string
 	if err != nil {
 		return err
 	}
-	detail, _ := json.Marshal(map[string]int64{"balances_cleared": cleared})
+	if cleared != 1 {
+		return ErrBalanceDriftChanged
+	}
+	detail, _ := json.Marshal(map[string]string{"asset": asset, "chain_raw": expectedChainRaw})
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_log(actor, action, subject, detail, ip, created_at)
         VALUES (?, 'balance.clear_drift', ?, ?, ?, ?)`, actor, address, string(detail), ip, now.UTC().Unix()); err != nil {
 		return fmt.Errorf("audit balance drift clear: %w", err)

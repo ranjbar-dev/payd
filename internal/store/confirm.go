@@ -137,14 +137,15 @@ func promotablePayments(tx *sql.Tx, lastHeight, solidifiedHeight int64, confirma
           UNION ALL
           SELECT b.height, b.block_id, b.parent_id FROM blocks b
           JOIN canonical child ON b.height = child.height - 1 AND child.parent_id = b.block_id
-        )
+		)
 		SELECT p.id,p.order_id,p.address_id,p.asset,p.status,p.direction,p.to_address
-        FROM payments p JOIN canonical b ON b.height = p.block_height
-        WHERE (p.status = 'seen' OR (p.status = 'unattributed' AND p.confirmed_at IS NULL))
-          AND p.block_height <= ?                         -- CNF-002(a): solidified height
-          AND p.block_id = b.block_id                    -- CNF-002(b): block identity
-          AND ? - p.block_height >= ?                    -- CNF-002(d): configured depth
-          AND (? IS NULL OR p.block_height < ?)`, // CNF-002b: unresolved reorg range
+		FROM payments p LEFT JOIN canonical b ON b.height = p.block_height
+		WHERE (p.status = 'seen' OR (p.status = 'unattributed' AND p.confirmed_at IS NULL))
+		  AND p.block_height <= ?                         -- CNF-002(a): solidified height
+		  AND (p.block_id = b.block_id                   -- CNF-002(b/c): retained canonical identity
+		    OR p.block_height < (SELECT MIN(height) FROM blocks)) -- below retention, solidity proves irreversibility
+		  AND ? - p.block_height >= ?                    -- CNF-002(d): configured depth
+		  AND (? IS NULL OR p.block_height < ?)`, // CNF-002b: unresolved reorg range
 		lastHeight, solidifiedHeight, lastHeight, confirmationsRequired, suspicion, suspicion)
 	if err != nil {
 		return nil, fmt.Errorf("find promotable payments: %w", err)

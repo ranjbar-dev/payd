@@ -213,6 +213,23 @@ func Current(ctx context.Context, database *store.Store, cfg config.Price, symbo
 	if err != nil {
 		return Quote{}, err
 	}
+	return currentQuote(cfg, symbol, value, fetchedAt, now)
+}
+
+// CurrentFromPrices applies the PRC-002/005 gates to one request-scoped price snapshot.
+func CurrentFromPrices(prices []store.Price, cfg config.Price, symbol string, now time.Time) (Quote, error) {
+	if (symbol == "USDT" || symbol == "USDC") && !pairConfigured(cfg.Pairs, symbol+"USDT") {
+		return Quote{USD: "1.00", FetchedAt: now.UTC().Unix()}, nil
+	}
+	for _, item := range prices {
+		if item.Symbol == symbol {
+			return currentQuote(cfg, symbol, item.PriceUSD, item.FetchedAt, now)
+		}
+	}
+	return Quote{}, fmt.Errorf("%w: %s", ErrUnavailable, symbol)
+}
+
+func currentQuote(cfg config.Price, symbol, value string, fetchedAt int64, now time.Time) (Quote, error) {
 	if IsStale(fetchedAt, now, cfg.StaleAfter) {
 		return Quote{}, fmt.Errorf("%w: %s", ErrUnavailable, symbol)
 	}

@@ -61,6 +61,34 @@ func TestConfigSafetyValidation(t *testing.T) {
 	}
 }
 
+func TestServerListenRequiresLoopbackOrTrustedProxy(t *testing.T) {
+	base := loadExample(t)
+	tests := []struct {
+		name         string
+		listen       string
+		trustedProxy bool
+		valid        bool
+	}{
+		{"IPv4 loopback", "127.0.0.1:8080", false, true},
+		{"IPv6 loopback", "[::1]:8080", false, true},
+		{"IPv6 loopback zone", "[::1%1]:8080", false, true},
+		{"IPv4 wildcard", "0.0.0.0:8080", false, false},
+		{"IPv6 wildcard", "[::]:8080", false, false},
+		{"hostname is not resolved", "localhost:8080", false, false},
+		{"trusted proxy", "0.0.0.0:8080", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.Server.Listen = tt.listen
+			cfg.Server.TrustedProxy = tt.trustedProxy
+			if err := cfg.Validate(); (err == nil) != tt.valid {
+				t.Fatalf("Validate() error = %v, want valid %t", err, tt.valid)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownFieldAndInsecureMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.yaml")
 	if err := os.WriteFile(path, []byte("unknown: true\n"), 0o600); err != nil {

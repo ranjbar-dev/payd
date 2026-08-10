@@ -307,7 +307,7 @@ func credit(block follower.Block, candidates []candidate, raw json.RawMessage, o
 				continue
 			}
 			if len(log.Topics) < 3 {
-				return nil, fmt.Errorf("transaction %s log %d Transfer event has fewer than three topics", item.txID, logIndex)
+				continue // DET-004a: a non-indexed Transfer has no authoritative source/destination to attribute.
 			}
 			fromKey, from, err := tronAddress(log.Topics[1])
 			if err != nil {

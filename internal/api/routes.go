@@ -52,6 +52,7 @@ var apiRoutes = []route{
 	{http.MethodGet, "/api/v1/export/withdrawals.csv", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.exportWithdrawalsCSV }},
 	{http.MethodGet, "/api/v1/energy/status", "wallets:read", func(s *Server) http.HandlerFunc { return s.energyStatus }},
 	{http.MethodGet, "/api/v1/energy/purchases", "wallets:read", func(s *Server) http.HandlerFunc { return s.listEnergyPurchases }},
+	{http.MethodGet, "/metrics", "", func(s *Server) http.HandlerFunc { return s.serveMetrics }},
 	{http.MethodPost, "/api/v1/withdrawals", "withdrawals:write", func(s *Server) http.HandlerFunc { return s.createWithdrawal }},
 	{http.MethodGet, "/api/v1/withdrawals", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.listWithdrawals }},
 	{http.MethodGet, "/api/v1/withdrawals/limits", "withdrawals:read", func(s *Server) http.HandlerFunc { return s.withdrawalLimits }},
@@ -63,7 +64,5 @@ var apiRoutes = []route{
 var publicRoutes = []route{
 	{http.MethodGet, "/healthz", "", func(s *Server) http.HandlerFunc { return s.health }},
 	{http.MethodGet, "/readyz", "", func(s *Server) http.HandlerFunc { return s.ready }},
-	{http.MethodGet, "/metrics", "", func(s *Server) http.HandlerFunc { return s.serveMetrics }},
 	{http.MethodGet, "/openapi.yaml", "", func(s *Server) http.HandlerFunc { return s.openAPI }},
-	{http.MethodGet, "/docs", "", func(s *Server) http.HandlerFunc { return s.swaggerUI }},
 }

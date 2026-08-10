@@ -1,9 +1,11 @@
 package energy
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,20 +65,21 @@ func TestTronZapProviderImplementsResourceTypeAndSignedCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	quote, err := provider.Quote("receiver", "ENERGY", 131000, time.Hour)
+	ctx := context.Background()
+	quote, err := provider.Quote(ctx, "receiver", "ENERGY", 131000, time.Hour)
 	if err != nil || quote.PriceTRX != "3.8" {
 		t.Fatalf("quote=%#v err=%v", quote, err)
 	}
 	quote.Reference = "purchase-1"
-	order, err := provider.Purchase(quote)
+	order, err := provider.Purchase(ctx, quote)
 	if err != nil || order.ID != "order-1" || order.ActualTRX != "3.7" {
 		t.Fatalf("order=%#v err=%v", order, err)
 	}
-	status, err := provider.Status(order.ID)
+	status, err := provider.Status(ctx, order.ID)
 	if err != nil || status.State != "success" || status.DelegationTxID != "txid" {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
-	balance, err := provider.Balance()
+	balance, err := provider.Balance(ctx)
 	if err != nil || balance != "42.5" {
 		t.Fatalf("balance=%q err=%v", balance, err)
 	}
@@ -84,6 +87,38 @@ func TestTronZapProviderImplementsResourceTypeAndSignedCalls(t *testing.T) {
 		if paths[path] != 1 {
 			t.Fatalf("%s calls = %d", path, paths[path])
 		}
+	}
+}
+
+func TestTronZapProviderRequestHonorsCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	provider, err := New(config.Energy{Enabled: true, Provider: "tronzap", APIURL: server.URL, Timeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := provider.Quote(ctx, "receiver", "ENERGY", 131000, time.Hour)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("quote error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("provider request did not stop after context cancellation")
 	}
 }
 

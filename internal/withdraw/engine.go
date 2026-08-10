@@ -125,7 +125,7 @@ func (e *Engine) EstimateResources(ctx context.Context, address, assetKind strin
 		return energy.ResourceEstimate{EnergySource: "existing", TRXCost: "0"}, nil
 	}
 	if cfg.Energy.Enabled && provider != nil && e.providerEnabled() {
-		quote, quoteErr := provider.Quote(address, "ENERGY", cfg.Energy.RentAmount, cfg.Energy.RentDuration)
+		quote, quoteErr := provider.Quote(ctx, address, "ENERGY", cfg.Energy.RentAmount, cfg.Energy.RentDuration)
 		if quoteErr == nil {
 			price, priceOK := new(big.Rat).SetString(quote.PriceTRX)
 			maximum, maximumOK := new(big.Rat).SetString(cfg.Energy.MaxPriceTRX)
@@ -652,7 +652,7 @@ func (e *Engine) tryRental(ctx context.Context, w store.Withdrawal, cfg config.C
 				e.delayEnergyPoll(purchase.ID, cfg.Energy.PollInterval)
 				return false, true, nil
 			}
-			status, statusErr := provider.Status(purchase.ProviderOrderID)
+			status, statusErr := provider.Status(ctx, purchase.ProviderOrderID)
 			if statusErr != nil {
 				e.logger.Warn("energy provider status failed; waiting for on-chain arrival", "purchase_id", purchase.ID, "error", statusErr)
 				e.delayEnergyPoll(purchase.ID, cfg.Energy.PollInterval)
@@ -674,7 +674,7 @@ func (e *Engine) tryRental(ctx context.Context, w store.Withdrawal, cfg config.C
 	if !cfg.Energy.Enabled || provider == nil || !e.providerEnabled() {
 		return false, false, nil
 	}
-	quote, quoteErr := provider.Quote(w.FromAddress, "ENERGY", cfg.Energy.RentAmount, cfg.Energy.RentDuration) // ENR-001/003/015
+	quote, quoteErr := provider.Quote(ctx, w.FromAddress, "ENERGY", cfg.Energy.RentAmount, cfg.Energy.RentDuration) // ENR-001/003/015
 	if quoteErr != nil {
 		return false, false, e.recordProviderFailure(ctx, cfg.Energy.Provider, quoteErr)
 	}
@@ -700,7 +700,7 @@ func (e *Engine) tryRental(ctx context.Context, w store.Withdrawal, cfg config.C
 		return false, false, err
 	}
 	quote.Reference = purchase.ID
-	order, purchaseErr := provider.Purchase(quote) // ENR-013: Quote contains no wallet key or signing authority.
+	order, purchaseErr := provider.Purchase(ctx, quote) // ENR-013: Quote contains no wallet key or signing authority.
 	if purchaseErr != nil {
 		// The outcome is ambiguous. The durable external ID is reconciled; Purchase is never repeated.
 		e.logger.Warn("energy purchase outcome ambiguous; polling by external id", "purchase_id", purchase.ID, "error", purchaseErr)
@@ -724,7 +724,7 @@ func (e *Engine) finishRental(ctx context.Context, purchase store.EnergyPurchase
 	provider := e.currentProvider()
 	actual, txid := purchase.ActualTRX, purchase.DelegationTxID
 	if provider != nil {
-		status, err := provider.Status(purchase.ProviderOrderID)
+		status, err := provider.Status(ctx, purchase.ProviderOrderID)
 		if err == nil {
 			if status.ActualTRX != "" {
 				actual = status.ActualTRX
@@ -834,7 +834,7 @@ func (e *Engine) checkProviderBalance(ctx context.Context) error {
 	}
 	e.nextBalanceCheck = now.Add(15 * time.Minute)
 	e.mu.Unlock()
-	balance, err := provider.Balance()
+	balance, err := provider.Balance(ctx)
 	if err != nil {
 		if storeErr := e.store.RecordEnergyProviderBalanceError(ctx, cfg.Energy.Provider, now, err); storeErr != nil {
 			return storeErr
@@ -1288,9 +1288,6 @@ func classifyBroadcast(response chain.Response, sendErr error) (string, string) 
 	case "SIGERROR", "TAPOS_ERROR", "TRANSACTION_EXPIRATION_ERROR", "CONTRACT_VALIDATE_ERROR", "BANDWITH_ERROR":
 		return "deterministic", code
 	default:
-		if sendErr != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-			return "ambiguous", code
-		}
 		return "ambiguous", code
 	}
 }

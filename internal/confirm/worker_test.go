@@ -141,3 +141,30 @@ func TestPromotionWaitsForReorgResolutionThenConfirmsOrder(t *testing.T) {
 		t.Fatalf("order.confirmed events=%d err=%v", events, err)
 	}
 }
+
+func TestPaymentPromotesAfterBlockRetentionPrunesItsBlock(t *testing.T) {
+	ctx := context.Background()
+	chain := newPaymentChain(t, "B1")
+	for height := int64(22); height <= 100; height++ {
+		if err := chain.database.CommitBlock(ctx, store.BlockRecord{
+			Height: height, ID: fmt.Sprintf("B%d", height), ParentID: fmt.Sprintf("B%d", height-1),
+			Timestamp: height + 1, ProcessedAt: height + 1,
+		}, 64, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	chain.reader.height = 100
+	worker, err := New(chain.reader, chain.database, 19, time.Hour, nil, store.EventConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := worker.Tick(ctx) // CNF-002: solidity still promotes below the retained block floor.
+	if err != nil || result.PaymentsConfirmed != 1 || result.OrdersConfirmed != 1 {
+		t.Fatalf("delayed promotion result=%+v err=%v", result, err)
+	}
+	order, err := chain.database.Order(ctx, chain.order.ID)
+	if err != nil || order.Status != "confirmed" {
+		t.Fatalf("confirmed order status=%q err=%v", order.Status, err)
+	}
+}

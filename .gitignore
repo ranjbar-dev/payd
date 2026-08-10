@@ -6,6 +6,7 @@ seed.age
 *.db
 *.db-shm
 *.db-wal
-payd.local.yaml
+payd.*.yaml
+!payd.example.yaml
 
 *.exe

@@ -11,7 +11,8 @@ Single YAML file, path via `--config` flag. Loaded once at startup, validated be
 
 ```yaml
 server:
-  listen: "0.0.0.0:8080"
+  listen: "127.0.0.1:8080"
+  trusted_proxy: false                       # true only behind a TLS reverse proxy
   read_timeout: 15s
   write_timeout: 30s
 
@@ -162,5 +163,6 @@ log:
 | CFG-011 | `energy.api_key` and `energy.api_secret` MUST be redacted from all logs and from any config-dump endpoint |
 | CFG-012 | If `energy.enabled` is true, the provider MUST be reachable at startup or the service MUST log a warning and continue with burn-only sourcing — an unreachable energy provider MUST NOT prevent startup |
 | CFG-013 | `resources.resource_wallet_index` MUST NOT fall within the deposit pool range. Indices **0–999 are the deposit pool**; **1000+ are operational** (resource wallet, future cold-storage destinations). At startup the service MUST insert the resource wallet address with `state = 'disabled'` if absent, MUST verify it is `disabled` if present, and MUST refuse to start otherwise |
-| CFG-014 | Every entry in `assets` MUST carry an explicit `verified: true` flag, and startup MUST log each token's contract address and decimals at **warn** level. Adding a token is a security-relevant act (see DET-004a) and MUST be deliberate rather than incidental |
+| CFG-014 | Every entry in `assets` MUST carry an explicit `verified: true` flag. Startup and each accepted SIGHUP reload MUST emit one deterministic **info** record listing every configured token's symbol, contract address, and decimals, sorted by symbol. Adding a token is a security-relevant act (see DET-004a) and MUST be deliberate rather than incidental |
 | CFG-015 | Startup MUST reject a configuration in which two enabled `tron.endpoints` share a hostname (see CHN-025) |
+| CFG-016 | `server.listen` MUST name a numeric loopback IP unless `server.trusted_proxy` is explicitly `true`. Enabling `trusted_proxy` is an operator acknowledgement that all remote access terminates TLS at a reverse proxy; it does not add TLS to `payd` or enable trust of forwarded identity headers |

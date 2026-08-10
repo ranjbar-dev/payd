@@ -24,15 +24,19 @@ type ParameterWorker struct {
 	logger         *slog.Logger
 	maxBurnTRX     string
 	maxBurn        *big.Rat
+	minEnergy      int64
 	maxBurnMu      sync.RWMutex
 	interval       time.Duration
 	errorCount     atomic.Uint64
 	ceilingHealthy atomic.Bool
 }
 
-func NewParameterWorker(read *ReadClient, database *store.Store, logger *slog.Logger, maxBurnTRX string) (*ParameterWorker, error) {
+func NewParameterWorker(read *ReadClient, database *store.Store, logger *slog.Logger, maxBurnTRX string, minEnergy int64) (*ParameterWorker, error) {
 	if read == nil || database == nil {
 		return nil, errors.New("chain parameter worker requires client and store")
+	}
+	if minEnergy < 0 {
+		return nil, errors.New("resources.min_energy must be non-negative")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -45,7 +49,7 @@ func NewParameterWorker(read *ReadClient, database *store.Store, logger *slog.Lo
 			return nil, errors.New("energy.max_burn_trx must be a non-negative decimal")
 		}
 	}
-	worker := &ParameterWorker{read: read, store: database, logger: logger, maxBurnTRX: maxBurnTRX, maxBurn: maxBurn, interval: chainParameterInterval}
+	worker := &ParameterWorker{read: read, store: database, logger: logger, maxBurnTRX: maxBurnTRX, maxBurn: maxBurn, minEnergy: minEnergy, interval: chainParameterInterval}
 	worker.ceilingHealthy.Store(maxBurn == nil)
 	return worker, nil
 }
@@ -103,7 +107,10 @@ func (w *ParameterWorker) ErrorCount() uint64 { return w.errorCount.Load() }
 // BurnCeilingHealthy is consumed by the readiness endpoint added in P14 (ENR-017).
 func (w *ParameterWorker) BurnCeilingHealthy() bool { return w.ceilingHealthy.Load() }
 
-func (w *ParameterWorker) UpdateMaxBurnTRX(ctx context.Context, value string) error {
+func (w *ParameterWorker) UpdateBurnCeiling(ctx context.Context, value string, minEnergy int64) error {
+	if minEnergy < 0 {
+		return errors.New("resources.min_energy must be non-negative")
+	}
 	var maximum *big.Rat
 	if value != "" {
 		var ok bool
@@ -113,7 +120,7 @@ func (w *ParameterWorker) UpdateMaxBurnTRX(ctx context.Context, value string) er
 		}
 	}
 	w.maxBurnMu.Lock()
-	w.maxBurnTRX, w.maxBurn = value, maximum
+	w.maxBurnTRX, w.maxBurn, w.minEnergy = value, maximum, minEnergy
 	w.maxBurnMu.Unlock()
 	params, err := w.store.LoadChainParameters(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -129,18 +136,18 @@ func (w *ParameterWorker) UpdateMaxBurnTRX(ctx context.Context, value string) er
 
 func (w *ParameterWorker) validateBurnCeiling(energyFee int64) {
 	w.maxBurnMu.RLock()
-	maxBurn, maxBurnTRX := w.maxBurn, w.maxBurnTRX
+	maxBurn, maxBurnTRX, minEnergy := w.maxBurn, w.maxBurnTRX, w.minEnergy
 	w.maxBurnMu.RUnlock()
 	if maxBurn == nil {
 		w.ceilingHealthy.Store(true)
 		return
 	}
-	requiredSun := energy.BurnCostSun(131000, energyFee)
+	requiredSun := energy.BurnCostSun(minEnergy, energyFee) // ENR-017: validate the configured worst-case transfer.
 	maxSun := new(big.Rat).Mul(maxBurn, big.NewRat(1_000_000, 1))
 	healthy := maxSun.Cmp(new(big.Rat).SetInt(requiredSun)) >= 0
 	w.ceilingHealthy.Store(healthy)
 	if !healthy {
-		w.logger.Warn("energy burn ceiling refuses a worst-case transfer", "max_burn_trx", maxBurnTRX, "required_burn_sun", requiredSun.String()) // ENR-017
+		w.logger.Warn("energy burn ceiling refuses a worst-case transfer", "max_burn_trx", maxBurnTRX, "min_energy", minEnergy, "required_burn_sun", requiredSun.String()) // ENR-017
 	}
 }
 

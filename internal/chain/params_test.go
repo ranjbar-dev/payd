@@ -24,7 +24,7 @@ func TestParameterRefreshKeepsAtomicLiveValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	worker, err := NewParameterWorker(client.Read, database, slog.New(slog.NewTextHandler(io.Discard, nil)), "20")
+	worker, err := NewParameterWorker(client.Read, database, slog.New(slog.NewTextHandler(io.Discard, nil)), "20", 131000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,5 +54,35 @@ func TestParameterRefreshKeepsAtomicLiveValues(t *testing.T) {
 	}
 	if worker.BurnCeilingHealthy() {
 		t.Fatal("20 TRX ceiling should not cover 55.02 TRX worst case")
+	}
+}
+
+func TestParameterWorkerReloadsMinEnergyForBurnCeiling(t *testing.T) {
+	ctx := context.Background()
+	client := testClient(t)
+	client.Read.core.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"chainParameter":[{"key":"getEnergyFee","value":100},{"key":"getTransactionFee","value":1000}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "payd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	worker, err := NewParameterWorker(client.Read, database, slog.New(slog.NewTextHandler(io.Discard, nil)), "15", 131000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !worker.BurnCeilingHealthy() {
+		t.Fatal("15 TRX ceiling should cover 131000 energy at 100 sun")
+	}
+	if err := worker.UpdateBurnCeiling(ctx, "15", 200000); err != nil {
+		t.Fatal(err)
+	}
+	if worker.BurnCeilingHealthy() {
+		t.Fatal("reload to 200000 energy should degrade a 15 TRX ceiling")
 	}
 }

@@ -205,10 +205,15 @@ func (s *Store) CreateWithdrawal(ctx context.Context, request CreateWithdrawal) 
 	return w, true, err
 }
 
-func (s *Store) ListWithdrawals(ctx context.Context, status string, limit int) ([]Withdrawal, error) {
-	query, args := withdrawalSelect, []any{}
+// ListWithdrawals provides API-025 keyset pagination over the declared newest-first order.
+func (s *Store) ListWithdrawals(ctx context.Context, status string, beforeCreatedAt int64, beforeID string, limit int) ([]Withdrawal, error) {
+	query, args := withdrawalSelect+" WHERE 1=1", []any{}
 	if status != "" {
-		query, args = query+" WHERE w.status = ?", append(args, status)
+		query, args = query+" AND w.status = ?", append(args, status)
+	}
+	if beforeID != "" {
+		query += " AND (w.created_at < ? OR (w.created_at = ? AND w.id < ?))"
+		args = append(args, beforeCreatedAt, beforeCreatedAt, beforeID)
 	}
 	query += " ORDER BY w.created_at DESC, w.id DESC LIMIT ?"
 	args = append(args, limit)
@@ -511,12 +516,9 @@ func (s *Store) RecordWithdrawalLookup(ctx context.Context, id string, found boo
 	}
 	defer func() { _ = tx.Rollback() }()
 	if lookupErr == nil {
-		status := "status"
-		if found {
-			status = "'broadcast'"
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE withdrawals SET status=`+status+`,status_updated_at=CASE WHEN `+status+`='broadcast' THEN ? ELSE status_updated_at END,
-			last_lookup_at=?,lookup_failures=0,last_lookup_error=NULL WHERE id=?`, now.UTC().Unix(), now.UTC().Unix(), id)
+		_, err = tx.ExecContext(ctx, `UPDATE withdrawals SET status=CASE WHEN ? THEN 'broadcast' ELSE status END,
+			status_updated_at=CASE WHEN ? OR status='broadcast' THEN ? ELSE status_updated_at END,last_lookup_at=?,lookup_failures=0,last_lookup_error=NULL WHERE id=?`,
+			found, found, now.UTC().Unix(), now.UTC().Unix(), id)
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE withdrawals SET last_lookup_at=?,lookup_failures=lookup_failures+1,last_lookup_error=? WHERE id=?`, now.UTC().Unix(), lookupErr.Error(), id)
 		if err == nil {

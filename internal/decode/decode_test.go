@@ -272,6 +272,62 @@ func TestReceiptFailureDoesNotCommitBlockOrCursor(t *testing.T) {
 	}
 }
 
+// DET-002a/004a: a configured token's non-indexed Transfer log is not
+// attributable, but it must not prevent valid logs or the block cursor advancing.
+func TestMalformedTransferLogDoesNotStallFollower(t *testing.T) {
+	item := fixtureWithTag(t, loadFixtures(t), "trc20_transfer")
+	block := fixtureBlock(t, item)
+	var infos []receipt
+	if err := json.Unmarshal(item.Receipts, &infos); err != nil {
+		t.Fatal(err)
+	}
+	valid := infos[0].Logs[0]
+	infos[0].Logs = append(infos[0].Logs, valid)
+	infos[0].Logs[0].Topics = []string{valid.Topics[0]}
+
+	contractKey, _, err := tronAddress(valid.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toKey, to, err := tronAddress(valid.Topics[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(context.Background(), t.TempDir()+"/payd.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	reader := &fakeReceipts{raw: mustJSON(t, infos)}
+	var payments []store.PaymentRecord
+	decoder := &Decoder{
+		reader: reader,
+		owned: func(context.Context) ([]store.OwnedAddress, error) {
+			return []store.OwnedAddress{{ID: 1, Address: to}}, nil
+		},
+		match: func(_ *store.BlockWrite, payment store.PaymentRecord) error {
+			payments = append(payments, payment)
+			return nil
+		},
+		assets: assetSet{byToken: map[string]string{contractKey: "USDT"}},
+		now:    func() time.Time { return time.Unix(123, 0) },
+	}
+	worker, err := follower.New(&fakeChain{tip: item.Block}, database, decoder.Prepare, 3*time.Second, 20, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(payments) != 1 || payments[0].LogIndex != 1 || payments[0].AddressID == nil || *payments[0].AddressID != 1 {
+		t.Fatalf("payments = %#v, want only the valid log at index 1 for owned key %s", payments, toKey)
+	}
+	if cursor, exists, err := database.Cursor(context.Background()); err != nil || !exists || cursor.LastHeight != block.Height {
+		t.Fatalf("cursor after malformed log = %#v, exists=%v, err=%v", cursor, exists, err)
+	}
+}
+
 type fakeChain struct{ tip json.RawMessage }
 
 func (f *fakeChain) GetNowBlock(context.Context) (json.RawMessage, error) { return f.tip, nil }

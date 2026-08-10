@@ -3,6 +3,7 @@ package energy
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,10 +20,10 @@ import (
 
 // Provider is the exact ENR-001 resource-market boundary. resourceType is required.
 type Provider interface {
-	Quote(receiver, resourceType string, amount int64, duration time.Duration) (Quote, error)
-	Purchase(Quote) (Order, error)
-	Status(orderID string) (Status, error)
-	Balance() (trx string, err error)
+	Quote(context.Context, string, string, int64, time.Duration) (Quote, error)
+	Purchase(context.Context, Quote) (Order, error)
+	Status(context.Context, string) (Status, error)
+	Balance(context.Context) (trx string, err error)
 }
 
 type Quote struct {
@@ -73,7 +74,7 @@ type tronZap struct {
 	client                 *http.Client
 }
 
-func (p *tronZap) Quote(receiver, resourceType string, amount int64, duration time.Duration) (Quote, error) {
+func (p *tronZap) Quote(ctx context.Context, receiver, resourceType string, amount int64, duration time.Duration) (Quote, error) {
 	hours, err := rentalHours(resourceType, amount, duration)
 	if err != nil {
 		return Quote{}, err
@@ -85,7 +86,7 @@ func (p *tronZap) Quote(receiver, resourceType string, amount int64, duration ti
 			Total decimalString `json:"total"`
 		} `json:"result"`
 	}
-	if err := p.post("/v1/calculate", request, &response); err != nil {
+	if err := p.post(ctx, "/v1/calculate", request, &response); err != nil {
 		return Quote{}, err
 	}
 	if response.Code != 0 || response.Result.Total == "" {
@@ -94,7 +95,7 @@ func (p *tronZap) Quote(receiver, resourceType string, amount int64, duration ti
 	return Quote{Receiver: receiver, ResourceType: resourceType, Amount: amount, Duration: duration, PriceTRX: string(response.Result.Total)}, nil
 }
 
-func (p *tronZap) Purchase(quote Quote) (Order, error) {
+func (p *tronZap) Purchase(ctx context.Context, quote Quote) (Order, error) {
 	hours, err := rentalHours(quote.ResourceType, quote.Amount, quote.Duration)
 	if err != nil {
 		return Order{}, err
@@ -107,7 +108,7 @@ func (p *tronZap) Purchase(quote Quote) (Order, error) {
 		},
 	}
 	var response transactionResponse
-	if err := p.post("/v1/transaction/new", request, &response); err != nil {
+	if err := p.post(ctx, "/v1/transaction/new", request, &response); err != nil {
 		return Order{}, err
 	}
 	if response.Code != 0 || response.Result.ID == "" {
@@ -116,13 +117,13 @@ func (p *tronZap) Purchase(quote Quote) (Order, error) {
 	return Order{ID: response.Result.ID, State: response.Result.Status, ActualTRX: string(response.Result.Amount), DelegationTxID: response.Result.Hash}, nil
 }
 
-func (p *tronZap) Status(orderID string) (Status, error) {
+func (p *tronZap) Status(ctx context.Context, orderID string) (Status, error) {
 	request := map[string]any{"id": orderID}
 	if strings.HasPrefix(orderID, externalOrderPrefix) {
 		request = map[string]any{"external_id": strings.TrimPrefix(orderID, externalOrderPrefix)}
 	}
 	var response transactionResponse
-	if err := p.post("/v1/transaction/check", request, &response); err != nil {
+	if err := p.post(ctx, "/v1/transaction/check", request, &response); err != nil {
 		return Status{}, err
 	}
 	if response.Code != 0 {
@@ -131,14 +132,14 @@ func (p *tronZap) Status(orderID string) (Status, error) {
 	return Status{State: response.Result.Status, ActualTRX: string(response.Result.Amount), DelegationTxID: response.Result.Hash}, nil
 }
 
-func (p *tronZap) Balance() (string, error) {
+func (p *tronZap) Balance(ctx context.Context) (string, error) {
 	var response struct {
 		Code   int `json:"code"`
 		Result struct {
 			Balance decimalString `json:"balance"`
 		} `json:"result"`
 	}
-	if err := p.post("/v1/balance", map[string]any{}, &response); err != nil {
+	if err := p.post(ctx, "/v1/balance", map[string]any{}, &response); err != nil {
 		return "", err
 	}
 	if response.Code != 0 || response.Result.Balance == "" {
@@ -157,7 +158,7 @@ type transactionResponse struct {
 	} `json:"result"`
 }
 
-func (p *tronZap) post(path string, payload, destination any) error {
+func (p *tronZap) post(ctx context.Context, path string, payload, destination any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -165,7 +166,7 @@ func (p *tronZap) post(path string, payload, destination any) error {
 	hash := sha256.New()
 	_, _ = hash.Write(body)
 	_, _ = hash.Write([]byte(p.secret))
-	req, err := http.NewRequest(http.MethodPost, p.baseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

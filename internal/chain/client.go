@@ -25,6 +25,7 @@ import (
 const (
 	readTimeout       = 10 * time.Second
 	circuitRetryAfter = 60 * time.Second
+	counterFlushEvery = 10 * time.Second
 )
 
 var errNoEndpoint = errors.New("all TronGrid endpoint circuits are open")
@@ -168,6 +169,28 @@ func (c *Client) RequestsToday() int64 { return c.counter.requestsToday() }
 func (c *Client) QuotaProjectionRatio() float64 { return c.counter.projectionRatio() }
 
 func (c *Client) ErrorCounts() map[string]uint64 { return c.errors.snapshot() }
+
+// RunRequestCounter periodically persists RL-006 snapshots and flushes once
+// more during shutdown. Request accounting itself never waits for SQLite.
+func (c *Client) RunRequestCounter(ctx context.Context) {
+	ticker := time.NewTicker(counterFlushEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := c.counter.flush(ctx); err != nil {
+				c.counter.logger.Error("persist TronGrid request count", "error", err)
+			}
+		case <-ctx.Done():
+			shutdown, cancel := context.WithTimeout(context.Background(), readTimeout)
+			if err := c.counter.flush(shutdown); err != nil {
+				c.counter.logger.Error("persist final TronGrid request count", "error", err)
+			}
+			cancel()
+			return
+		}
+	}
+}
 
 // SoftCap is 70% of the configured quota, derived from RL-001 (CHN-023).
 func (c *Client) SoftCap() int64 { return c.counter.softCap }
@@ -342,9 +365,7 @@ func (c *clientCore) sendOnce(ctx context.Context, endpoint endpointRef, method,
 	if endpoint.apiKey != "" {
 		request.Header.Set("TRON-PRO-API-KEY", endpoint.apiKey) // CHN-020
 	}
-	if err := c.counter.increment(ctx); err != nil {
-		return Response{}, fmt.Errorf("record TronGrid request: %w", err)
-	}
+	c.counter.increment()
 	response, err := c.http.Do(request)
 	if err != nil {
 		c.errors.add("network")
@@ -439,33 +460,41 @@ type dailyCounter struct {
 	softCapWarned    bool
 	now              func() time.Time
 	logger           *slog.Logger
-	store            *store.Store
 	counts           map[int64]int64
+	persisted        map[int64]int64
+	persist          func(context.Context, int64, int64, time.Time) error
 }
 
 func newDailyCounter(quota int64, logger *slog.Logger, database *store.Store) (*dailyCounter, error) {
 	c := &dailyCounter{quota: quota, softCap: quota * 70 / 100, now: time.Now, logger: logger,
-		store: database, counts: make(map[int64]int64)}
+		counts: make(map[int64]int64), persisted: make(map[int64]int64),
+		persist: database.PersistTronGridRequestCount}
 	history, err := database.TronGridRequestHistory(context.Background(), c.now())
 	if err != nil {
 		return nil, err
 	}
 	for _, day := range history {
-		c.counts[day.DayStart] = day.Requests
+		c.counts[day.DayStart], c.persisted[day.DayStart] = day.Requests, day.Requests
+	}
+	// API-038 exposes today plus six days; RL-006 projects from seven complete
+	// days, so load the one additional day without widening the API response.
+	previous, err := database.TronGridRequestHistory(context.Background(), c.now().Add(-24*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	for _, day := range previous {
+		c.counts[day.DayStart], c.persisted[day.DayStart] = day.Requests, day.Requests
 	}
 	c.rollUTC()
 	return c, nil
 }
 
-func (c *dailyCounter) increment(ctx context.Context) error {
+func (c *dailyCounter) increment() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rollUTC()
-	count, err := c.store.RecordTronGridRequest(ctx, c.now())
-	if err != nil {
-		return err
-	}
-	c.count, c.counts[c.day] = count, count
+	c.count++
+	c.counts[c.day] = c.count
 	warnAt := (c.softCap*80 + 99) / 100
 	projection := c.projectionRatioLocked()
 	shouldWarn := !c.projectionWarned && projection >= .60
@@ -478,11 +507,33 @@ func (c *dailyCounter) increment(ctx context.Context) error {
 	}
 	day := time.Unix(c.day, 0).UTC().Format(time.DateOnly)
 	if shouldWarn {
-		c.logger.Warn("TronGrid seven-day quota projection crossed 60%", "utc_day", day, "requests", count,
+		c.logger.Warn("TronGrid seven-day quota projection crossed 60%", "utc_day", day, "requests", c.count,
 			"projection_ratio", projection, "daily_quota", c.quota) // RL-006
 	}
 	if shouldSoftCapWarn {
-		c.logger.Warn("TronGrid daily request usage reached 80% of soft cap", "utc_day", day, "requests", count, "soft_cap", c.softCap) // CHN-023
+		c.logger.Warn("TronGrid daily request usage reached 80% of soft cap", "utc_day", day, "requests", c.count, "soft_cap", c.softCap) // CHN-023
+	}
+}
+
+func (c *dailyCounter) flush(ctx context.Context) error {
+	c.mu.Lock()
+	c.rollUTC()
+	snapshots := make(map[int64]int64)
+	for day, count := range c.counts {
+		if count > c.persisted[day] {
+			snapshots[day] = count
+		}
+	}
+	now := c.now()
+	c.mu.Unlock()
+
+	for day, count := range snapshots {
+		if err := c.persist(ctx, day, count, now); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		c.persisted[day] = max(c.persisted[day], count)
+		c.mu.Unlock()
 	}
 	return nil
 }
@@ -535,6 +586,7 @@ func (c *dailyCounter) rollUTC() {
 		for recorded := range c.counts {
 			if recorded < day-int64(7*24*time.Hour/time.Second) {
 				delete(c.counts, recorded)
+				delete(c.persisted, recorded)
 			}
 		}
 	}

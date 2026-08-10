@@ -37,7 +37,7 @@ which file it lives in.
 | 20 | [`specs/20-risks-and-rejected-features.md`](specs/20-risks-and-rejected-features.md) | Open risks and mitigations, rejected alternatives, deferred features | `R-*` | Before proposing sweeping, fresh-address mode, or retry — these were considered and rejected, read why first |
 | 21 | [`specs/21-appendix-review-findings.md`](specs/21-appendix-review-findings.md) | Traceability from the 30 v1.1 review findings to the requirements that close them | `F-1`…`F-30` | You want to understand *why* a requirement exists |
 
-| — | [`../internal/api/openapi.yaml`](../internal/api/openapi.yaml) and [`specs/15-rest-api.md`](specs/15-rest-api.md) | OpenAPI document / Swagger UI | `API-*` | Updating the served API contract or browser-based route documentation |
+| — | [`../internal/api/openapi.yaml`](../internal/api/openapi.yaml) and [`specs/15-rest-api.md`](specs/15-rest-api.md) | OpenAPI document | `API-*` | Updating the served API contract |
 
 ## Glossary quick-lookup
 

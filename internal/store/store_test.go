@@ -42,7 +42,7 @@ func TestSQLiteCLIBackupWhileStoreIsOpen(t *testing.T) {
 		t.Fatalf("online .backup: %v: %s", err, output)
 	}
 	output, err := exec.CommandContext(ctx, "sqlite3", backupPath, "PRAGMA integrity_check; SELECT COUNT(*) FROM schema_migrations;").CombinedOutput()
-	if err != nil || strings.Join(strings.Fields(string(output)), " ") != "ok 7" {
+	if err != nil || strings.Join(strings.Fields(string(output)), " ") != "ok 8" {
 		t.Fatalf("verify backup: %v: %q", err, output)
 	}
 }
@@ -69,7 +69,7 @@ func TestOpenMigrateAndInitializeWallet(t *testing.T) {
 	assertPragma(t, s.full, "foreign_keys", "1")
 	assertPragma(t, s.full, "synchronous", "2")
 	var migrations, tables int
-	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 7 {
+	if err := s.normal.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 8 {
 		t.Fatalf("migrations count = %d, err = %v", migrations, err)
 	}
 	if err := s.normal.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil || tables != 18 {

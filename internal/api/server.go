@@ -41,8 +41,9 @@ type Server struct {
 	readyChecks        func(context.Context) []string
 	metrics            http.Handler
 
-	rateMu sync.Mutex
-	rates  map[string]rateWindow
+	rateMu        sync.Mutex
+	rates         map[string]rateWindow
+	lastRateSweep time.Time
 }
 
 type resourceDelegator interface {
@@ -89,7 +90,8 @@ func New(database *store.Store, pool *walletpool.Pool, cfg config.Config, logger
 	for _, registered := range publicRoutes {
 		root.HandleFunc(registered.method+" "+registered.pattern, registered.handler(server))
 	}
-	root.Handle("/", server.authenticate(server.rateLimit(mux)))
+	// Reserve an IP slot before API-020's Argon2 work, then apply API-023 per key after authentication.
+	root.Handle("/", server.rateLimit(server.authenticate(server.rateLimit(mux))))
 	server.handler = server.logRequests(server.normalizeErrors(root))
 	return server, nil
 }

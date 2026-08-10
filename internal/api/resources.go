@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"time"
 
 	"payd/internal/store"
 )
@@ -13,10 +14,23 @@ func (s *Server) delegateWallet(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ResourceType string `json:"resource_type"`
 		Amount       int64  `json:"amount"`
+		TOTP         string `json:"totp"` // Accepted only to reject the retired credential transport (API-022a).
 	}
-	if err := decodeJSON(w, r, &request, false); err != nil ||
-		(request.ResourceType != "ENERGY" && request.ResourceType != "BANDWIDTH") || request.Amount <= 0 {
+	if err := decodeJSON(w, r, &request, false); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body is invalid", nil)
+		return
+	}
+	if request.TOTP != "" {
+		writeError(w, http.StatusBadRequest, "totp_in_body", "send the TOTP code in the X-TOTP header, not the request body", nil)
+		return
+	}
+	if (request.ResourceType != "ENERGY" && request.ResourceType != "BANDWIDTH") || request.Amount <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "resource_type must be ENERGY or BANDWIDTH and amount must be a positive integer", nil)
+		return
+	}
+	// API-022 / RES-013: consume the second factor before entering the single-attempt broadcast path.
+	if err := s.ValidateTOTP(r.Context(), r.Header.Get("X-TOTP"), time.Now()); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_totp", "TOTP is invalid or already used", nil)
 		return
 	}
 	s.mu.RLock()

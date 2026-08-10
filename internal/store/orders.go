@@ -92,6 +92,7 @@ func (s *Store) CreateOrder(ctx context.Context, derive func(uint32) (string, er
 		addressID, hdIndex, address, err = insertNextAddress(tx, derive, poolMax, now)
 		if errors.Is(err, ErrPoolExhausted) {
 			poolExhausted = true
+			// ORD-008a/LIF-003: continue through INSERT so an external_ref replay resolves; this in-use address is only a rollback placeholder and must never reach commit.
 			err = tx.QueryRow(`SELECT id, hd_index, address FROM addresses
                 WHERE hd_index BETWEEN 0 AND 999 ORDER BY hd_index LIMIT 1`).Scan(&addressID, &hdIndex, &address)
 			if errors.Is(err, sql.ErrNoRows) {

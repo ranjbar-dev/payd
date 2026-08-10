@@ -456,10 +456,19 @@ func (s *Store) RewindChain(ctx context.Context, ancestorHeight int64, eventConf
 	return RewindResult{OrphanedPayments: orphaned, RevertedOrders: reverted}, nil
 }
 
+const balancePaymentsQuery = `SELECT amount_raw,direction,status,confirmed_at
+	FROM payments
+	WHERE address_id=? AND asset=? AND status<>'orphaned'
+	UNION ALL
+	SELECT p.amount_raw,'in',p.status,p.confirmed_at
+	FROM payments p JOIN addresses a ON a.id=? AND a.address=p.to_address
+	WHERE p.asset=? AND p.direction='out' AND p.status<>'orphaned'
+	  AND (p.address_id IS NULL OR p.address_id<>?)`
+
 func recalculateBalance(tx *sql.Tx, addressID int64, asset string) error {
-	rows, err := tx.Query(`SELECT amount_raw,CASE WHEN address_id=? THEN direction ELSE 'in' END,status,confirmed_at
-		FROM payments WHERE asset=? AND status<>'orphaned' AND (address_id=? OR
-		(direction='out' AND to_address=(SELECT address FROM addresses WHERE id=?)))`, addressID, asset, addressID, addressID)
+	// BAL-001/WDR-023: separate indexed source and recipient branches; exclude
+	// overlap so owned self-transfers retain the former OR query's single debit.
+	rows, err := tx.Query(balancePaymentsQuery, addressID, asset, addressID, asset, addressID)
 	if err != nil {
 		return fmt.Errorf("load balance payments: %w", err)
 	}

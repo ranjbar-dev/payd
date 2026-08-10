@@ -312,24 +312,24 @@ type fakeEnergyProvider struct {
 	quoteCalls, purchaseCalls, statusCalls, balanceCalls int
 }
 
-func (f *fakeEnergyProvider) Quote(receiver, resourceType string, amount int64, duration time.Duration) (energy.Quote, error) {
+func (f *fakeEnergyProvider) Quote(_ context.Context, receiver, resourceType string, amount int64, duration time.Duration) (energy.Quote, error) {
 	f.quoteCalls++
 	quote := f.quote
 	quote.Receiver, quote.ResourceType, quote.Amount, quote.Duration = receiver, resourceType, amount, duration
 	return quote, f.quoteErr
 }
 
-func (f *fakeEnergyProvider) Purchase(quote energy.Quote) (energy.Order, error) {
+func (f *fakeEnergyProvider) Purchase(context.Context, energy.Quote) (energy.Order, error) {
 	f.purchaseCalls++
 	return f.order, f.purchaseErr
 }
 
-func (f *fakeEnergyProvider) Status(string) (energy.Status, error) {
+func (f *fakeEnergyProvider) Status(context.Context, string) (energy.Status, error) {
 	f.statusCalls++
 	return f.status, f.statusErr
 }
 
-func (f *fakeEnergyProvider) Balance() (string, error) {
+func (f *fakeEnergyProvider) Balance(context.Context) (string, error) {
 	f.balanceCalls++
 	return f.balance, f.balanceErr
 }
@@ -384,7 +384,7 @@ func TestSecondTRC20WithdrawalSourcesBandwidth(t *testing.T) {
 	if err := engine.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	items, err := database.ListWithdrawals(ctx, "", 10)
+	items, err := database.ListWithdrawals(ctx, "", 0, "", 10)
 	if err != nil || len(items) != 2 {
 		t.Fatalf("withdrawals=%d err=%v", len(items), err)
 	}
@@ -546,7 +546,7 @@ func TestTRXWithdrawalAlsoSourcesBandwidth(t *testing.T) {
 	if err := engine.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	items, err := database.ListWithdrawals(ctx, "", 10)
+	items, err := database.ListWithdrawals(ctx, "", 0, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +821,7 @@ func withdrawalFixture(t *testing.T) (*Engine, *store.Store, *countingSigner, *f
 
 func onlyWithdrawal(t *testing.T, database *store.Store) store.Withdrawal {
 	t.Helper()
-	items, err := database.ListWithdrawals(context.Background(), "", 10)
+	items, err := database.ListWithdrawals(context.Background(), "", 0, "", 10)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("withdrawals=%d err=%v", len(items), err)
 	}

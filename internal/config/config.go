@@ -38,6 +38,7 @@ type Config struct {
 
 type Server struct {
 	Listen       string        `yaml:"listen"`
+	TrustedProxy bool          `yaml:"trusted_proxy"`
 	ReadTimeout  time.Duration `yaml:"read_timeout"`
 	WriteTimeout time.Duration `yaml:"write_timeout"`
 }
@@ -223,7 +224,7 @@ func validateFileMode(path string) error {
 
 var decimal = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
 
-// Validate rejects invalid or missing values instead of supplying defaults (CFG-001..015).
+// Validate rejects invalid or missing values instead of supplying defaults (CFG-001..016).
 func (c Config) Validate() error {
 	var errs []error
 	add := func(ok bool, format string, args ...any) {
@@ -236,9 +237,10 @@ func (c Config) Validate() error {
 		add(!required && value == "" || decimal.MatchString(value), "%s must be a non-negative decimal string", name)
 	}
 
-	_, port, err := net.SplitHostPort(c.Server.Listen)
+	host, port, err := net.SplitHostPort(c.Server.Listen)
 	portNumber, portErr := strconv.Atoi(port)
 	add(c.Server.Listen != "" && err == nil && portErr == nil && portNumber >= 1 && portNumber <= 65535, "server.listen must be host:port with port 1..65535")
+	add(err != nil || c.Server.TrustedProxy || isLoopbackIP(host), "server.listen must use a loopback IP unless server.trusted_proxy is true (CFG-016)")
 	positiveDuration("server.read_timeout", c.Server.ReadTimeout)
 	positiveDuration("server.write_timeout", c.Server.WriteTimeout)
 	add(c.Database.Path != "", "database.path is required")
@@ -381,6 +383,18 @@ func (c Config) Validate() error {
 	add(c.Log.Format == "json" || c.Log.Format == "console", "log.format must be json or console")
 
 	return errors.Join(errs...)
+}
+
+func isLoopbackIP(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		base, _, zoned := strings.Cut(host, "%")
+		if !zoned || !strings.Contains(base, ":") {
+			return false
+		}
+		ip = net.ParseIP(base)
+	}
+	return ip != nil && ip.IsLoopback()
 }
 
 func httpURL(value string) (*url.URL, error) {

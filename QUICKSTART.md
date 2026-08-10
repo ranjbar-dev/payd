@@ -106,6 +106,7 @@ $b = New-Object byte[] 32
 ```bash
 # Git Bash
 head -c 32 /dev/urandom > internal/seed/seed.key
+chmod 600 internal/seed/seed.key
 ```
 
 > **Back this file up separately from `seed.age`.** Losing `seed.key` means
@@ -173,6 +174,7 @@ config:
 ```yaml
 server:
   listen: "127.0.0.1:8080"
+  trusted_proxy: false
   read_timeout: 15s
   write_timeout: 30s
 database:
@@ -377,32 +379,24 @@ Rate limits are per key: 100 req/min general, 10 req/min on `/withdrawals`
 
 ---
 
-### Testing routes in Swagger UI
+### Testing routes from the OpenAPI contract
 
-Start the daemon and open <http://127.0.0.1:8080/docs>. Click **Authorize** and
-paste the `X-API-Key` value produced by `./paydev.exe apikey` in §4.4. Use the
-key itself—not the `key_hash` stored in the config.
-
-For an end-to-end check, expand `POST /api/v1/orders`, click **Try it out**,
-paste the T5 request body below, and click **Execute**. Confirm the response is
-**201** and that `amount` is the JSON string `"1.5"`, not the number `1.5`.
-
-`POST /api/v1/withdrawals` additionally requires an `Idempotency-Key` header
-and a fresh code from `./paydev.exe totp <secret>`. Each TOTP is single-use: a
-second Execute with the same code returns 401 `invalid_totp` by design
-(`API-022`), so generate a new code before every attempt.
-
-Swagger UI loads its assets from a CDN and therefore needs internet access.
-The OpenAPI document itself works fully offline and can be saved and imported
-into Postman, Insomnia, or Bruno:
+The embedded OpenAPI document works offline and can be saved and imported into
+Postman, Insomnia, Bruno, or another API client:
 
 ```bash
 curl -s http://127.0.0.1:8080/openapi.yaml -o payd-openapi.yaml
 ```
 
-**Warning:** `/docs` and `/openapi.yaml` are unauthenticated; keep
-`server.listen` on `127.0.0.1`, or put payd behind a proxy that blocks these
-paths, consistent with §6.4.
+Configure `X-API-Key` with the key produced by `./paydev.exe apikey`, not the
+stored `key_hash`. Withdrawals, manual resource delegation, and drift clearing
+also need a fresh `X-TOTP`; each TOTP is single-use (`API-022`). Withdrawal
+creation additionally needs an `Idempotency-Key`. Imported requests are real
+and affect the configured network.
+
+**Warning:** `/openapi.yaml` is unauthenticated; keep `server.listen` on
+`127.0.0.1`, or put payd behind a proxy that blocks the path, consistent with
+§6.4.
 
 ---
 
@@ -411,7 +405,7 @@ paths, consistent with §6.4.
 ```bash
 sqlite3 -header -column "file:$DB?mode=ro" "SELECT * FROM crawler_state;"
 sqlite3 "file:$DB?mode=ro" "SELECT count(*), min(height), max(height) FROM blocks;"
-curl -s $BASE/metrics | grep payd_chain_lag_blocks
+curl -s -H "X-API-Key: $KEY" $BASE/metrics | grep payd_chain_lag_blocks
 ```
 
 **Pass if:** `last_height` climbs about one per 3 seconds, `solidified_height`
@@ -707,8 +701,16 @@ curl -s -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
 
 If the reconciler finds the chain and the database disagreeing, it sets
 `drift_detected = 1`, emits `balance.drift_detected`, and **blocks withdrawals
-from that address** with HTTP 409 `balance_drift` until you review and clear it
-via `POST /api/v1/wallets/{address}/clear-drift` (`BAL-002`).
+from that address** with HTTP 409 `balance_drift` until you review it. Clear one
+asset by acknowledging the latest base-unit `chain_raw` returned by the wallet
+API; a new reconciliation makes a stale acknowledgement fail with 409:
+
+```bash
+TOTP=$(./paydev.exe totp "$TOTP_SECRET")
+curl -s -X POST "$BASE/api/v1/wallets/<ADDRESS>/clear-drift" \
+  -H "X-API-Key: $KEY" -H "X-TOTP: $TOTP" -H "Content-Type: application/json" \
+  -d '{"asset":"USDT","chain_raw":"<CURRENT_CHAIN_RAW>"}'
+```
 
 ---
 
@@ -784,7 +786,7 @@ to guess. Watch `payd_withdrawals_needs_operator` in `/metrics`.
 ### T11 — Metrics
 
 ```bash
-curl -s $BASE/metrics
+curl -s -H "X-API-Key: $KEY" $BASE/metrics
 ```
 
 Verified sample:
@@ -931,8 +933,10 @@ Return 2xx fast and do the work asynchronously — the dispatcher's timeout is
 
 * One `payd` process per environment. **Never two against the same SQLite
   file** — the single-writer constraint is why this is one binary (`TD-003`).
-* Bind to `127.0.0.1` and reach it over a private network or a reverse proxy
-  with mTLS. There is no TLS in `payd` itself.
+* Bind to `127.0.0.1` for local access. Remote access must go through a
+  TLS-terminating reverse proxy because there is no TLS in `payd` itself. Set
+  `server.trusted_proxy: true` only when that proxy is in place; this merely
+  permits a non-loopback bind and does not make forwarded headers trusted.
 * Back up `payd.db` with `sqlite3 payd.db ".backup out.db"` (safe while
   running), plus `seed.age` **and** `internal/seed/seed.key` stored separately.
   See `docs/operations/backup-and-recovery.md`.
@@ -976,8 +980,9 @@ POST   /api/v1/withdrawals                   withdrawals:write
 GET    /api/v1/withdrawals                   withdrawals:read
 GET    /api/v1/withdrawals/{id}              withdrawals:read
 GET    /api/v1/withdrawals/limits            withdrawals:read
-GET    /healthz  /readyz  /metrics           (no auth)
-GET    /docs  /openapi.yaml                   (no auth)
+GET    /healthz  /readyz                     (no auth)
+GET    /metrics                              any authenticated key
+GET    /openapi.yaml                          (no auth)
 ```
 
 The thirteen missing endpoints above are deliberately absent from the OpenAPI

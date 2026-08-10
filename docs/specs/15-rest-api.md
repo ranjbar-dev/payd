@@ -65,9 +65,9 @@ Base path `/api/v1`. All requests require `X-API-Key`. All responses are JSON.
 | GET | `/wallets/{address}` | `wallets:read` | Single address detail with payment history |
 | GET | `/wallets/with-balance` | `wallets:read` | Only addresses holding **confirmed** funds — the withdrawal source list |
 | GET | `/wallets/needs-resources` | `wallets:read` | Addresses flagged `needs_resources` |
-| POST | `/wallets/{address}/delegate` | `resources:write` | Delegate energy or bandwidth from the resource wallet |
+| POST | `/wallets/{address}/delegate` | `resources:write` + TOTP | Delegate energy or bandwidth from the resource wallet |
 | POST | `/wallets/{address}/disable` | `wallets:write` | Remove from rotation |
-| POST | `/wallets/{address}/clear-drift` | `wallets:write` | **New.** Clear `drift_detected` after operator review (BAL-002) |
+| POST | `/wallets/{address}/clear-drift` | `wallets:write` + TOTP | **New.** Clear one asset's `drift_detected` after acknowledging its current `chain_raw` (BAL-002) |
 
 **`GET /wallets/needs-resources` response:**
 
@@ -148,7 +148,7 @@ Headers: `X-API-Key`, `Idempotency-Key`, `X-TOTP`.
 | GET | `/stats` | any | Order/payment/volume summary for the dashboard |
 | GET | `/healthz` | none | Liveness |
 | GET | `/readyz` | none | Readiness (see OPS-001) |
-| GET | `/metrics` | none | Prometheus |
+| GET | `/metrics` | any | Prometheus |
 
 ## 15.5 Tier B support and operator additions
 
@@ -192,7 +192,7 @@ scope is introduced by the Tier C additions.
 |---|---|
 | API-020 | Auth MUST be by `X-API-Key` matched against Argon2id hashes in config, with per-key scopes enforced per route |
 | API-021 | Failed auth MUST return 401 with no detail about which part failed |
-| API-022 | TOTP MUST be verified with a ±1 step (30s) window, and each code MUST be single-use — a replay within the window MUST be rejected. **Single-use state MUST be persisted in the `used_totp` table**, not held in memory: an in-memory set reopens the entire replay window on every restart. Validation order is governed by WDR-001a |
+| API-022 | TOTP MUST be verified with a ±1 step (30s) window, and each code MUST be single-use — a replay within the window MUST be rejected. **Single-use state MUST be persisted in the `used_totp` table**, not held in memory: an in-memory set reopens the entire replay window on every restart. Validation order is governed by WDR-001a. If `POST /withdrawals` returns 409 after successfully consuming a code, `error.details.totp_consumed` MUST be `true` so the operator knows to wait for a fresh code before correcting the request |
 | API-022a | **Every route taking a TOTP MUST read it from the `X-TOTP` header, and MUST reject a code supplied in the request body with 400 `totp_in_body` rather than ignoring it.** One transport for one credential: two accepted forms means an integrator following the wrong example gets a 401 that names the code rather than its placement. Rejecting beats ignoring, because a silently dropped code leaves the caller believing it presented a second factor when it presented none — and on a route that moves funds that belief is the whole control. The rejected request MUST NOT consume the code, so the corrected retry still succeeds |
 | API-023 | Rate limiting MUST be applied per API key: 100 req/min default, 10 req/min on withdrawal routes |
 | API-024 | All errors MUST use a consistent envelope: `{"error": {"code": "insufficient_balance", "message": "...", "details": {}}}` |

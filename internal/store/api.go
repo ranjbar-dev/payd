@@ -122,12 +122,12 @@ func (s *Store) StreamOrders(ctx context.Context, filter OrderFilter, limit int,
 	return rows.Err()
 }
 
-func (s *Store) OrderPayments(ctx context.Context, orderID string) ([]Payment, error) {
-	return s.listPayments(ctx, "order_id = ?", []any{orderID}, 0, 0)
+func (s *Store) OrderPayments(ctx context.Context, orderID string, after int64, limit int) ([]Payment, error) {
+	return s.listPayments(ctx, "order_id = ?", []any{orderID}, after, limit)
 }
 
-func (s *Store) AddressPayments(ctx context.Context, addressID int64) ([]Payment, error) {
-	return s.listPayments(ctx, "address_id = ?", []any{addressID}, 0, 0)
+func (s *Store) AddressPayments(ctx context.Context, addressID, after int64, limit int) ([]Payment, error) {
+	return s.listPayments(ctx, "address_id = ?", []any{addressID}, after, limit)
 }
 
 func (s *Store) ListPayments(ctx context.Context, status string, after int64, limit int) ([]Payment, error) {

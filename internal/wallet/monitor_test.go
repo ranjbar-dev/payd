@@ -115,7 +115,11 @@ func TestMonitorTiersAndBalanceDrift(t *testing.T) {
 	if count, err := database.OutboxCount(ctx, "balance.drift_detected"); err != nil || count != 2 {
 		t.Fatalf("drift events = %d, %v", count, err)
 	}
-	if err := database.ClearBalanceDrift(ctx, addresses[0].Address, "operator", "127.0.0.1", time.Now()); err != nil {
+	current, err := database.WalletAddress(ctx, addresses[0].Address)
+	if err != nil || len(current.Balances) != 1 || current.Balances[0].ChainRaw == nil {
+		t.Fatalf("load reconciled balance = %+v, %v", current, err)
+	}
+	if err := database.ClearBalanceDrift(ctx, addresses[0].Address, "USDT", *current.Balances[0].ChainRaw, "operator", "127.0.0.1", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if balance, err := database.BalanceForWithdrawal(ctx, addresses[0].Address, "USDT"); err != nil || balance.ConfirmedRaw != "20" {

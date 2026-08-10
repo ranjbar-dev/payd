@@ -189,11 +189,14 @@ func TestCircuitOpensAfterFiveFailures(t *testing.T) {
 
 func TestDailyCounterRollsAtUTCMidnight(t *testing.T) {
 	client := testClient(t)
+	written := make(map[int64]int64)
+	client.counter.persist = func(_ context.Context, day, count int64, _ time.Time) error {
+		written[day] = count
+		return nil
+	}
 	now := time.Date(2026, 8, 7, 23, 59, 59, 0, time.UTC)
 	client.counter.now = func() time.Time { return now }
-	if err := client.counter.increment(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	client.counter.increment()
 	if got := client.RequestsToday(); got != 1 {
 		t.Fatalf("first UTC day count = %d", got)
 	}
@@ -201,8 +204,69 @@ func TestDailyCounterRollsAtUTCMidnight(t *testing.T) {
 	if got := client.RequestsToday(); got != 0 {
 		t.Fatalf("new UTC day count = %d, want 0", got)
 	}
+	client.counter.increment()
+	if err := client.counter.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 2 {
+		t.Fatalf("persisted UTC days = %v, want both sides of midnight", written)
+	}
 	if got := client.SoftCap(); got != 70_000 {
 		t.Fatalf("soft cap = %d, want 70000", got)
+	}
+}
+
+func TestCounterPersistenceFailureDoesNotAbortRPC(t *testing.T) {
+	client := testClient(t)
+	client.Read.core.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+	})
+	client.counter.persist = func(context.Context, int64, int64, time.Time) error {
+		return errors.New("sqlite busy")
+	}
+
+	if _, err := client.Read.GetNowBlock(context.Background()); err != nil {
+		t.Fatalf("RPC failed because counter persistence failed: %v", err)
+	}
+	if err := client.counter.flush(context.Background()); err == nil {
+		t.Fatal("counter flush error was hidden")
+	}
+	if _, err := client.Read.GetNowBlock(context.Background()); err != nil {
+		t.Fatalf("RPC after failed counter flush: %v", err)
+	}
+	if got := client.RequestsToday(); got != 2 {
+		t.Fatalf("in-memory requests = %d, want 2", got)
+	}
+}
+
+func TestRequestCounterFinalFlush(t *testing.T) {
+	client := testClient(t)
+	flushed := make(chan int64, 1)
+	client.counter.persist = func(_ context.Context, _, count int64, _ time.Time) error {
+		flushed <- count
+		return nil
+	}
+	client.counter.increment()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		client.RunRequestCounter(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request counter did not stop")
+	}
+
+	select {
+	case count := <-flushed:
+		if count != 1 {
+			t.Fatalf("final request count = %d, want 1", count)
+		}
+	default:
+		t.Fatal("final request count was not persisted")
 	}
 }
 
@@ -222,9 +286,7 @@ func TestQuotaProjectionUsesPersistedSevenDayTrend(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	client.counter.logger = slog.New(slog.NewTextHandler(&logs, nil))
-	if err := client.counter.increment(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	client.counter.increment()
 	if !strings.Contains(logs.String(), "seven-day quota projection crossed 60%") {
 		t.Fatalf("RL-006 warning missing: %s", logs.String())
 	}
@@ -242,7 +304,8 @@ func TestDailyCounterSurvivesClientRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.counter.increment(context.Background()); err != nil {
+	client.counter.increment()
+	if err := client.counter.flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), database)

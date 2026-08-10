@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,63 @@ func TestReorgOrphansRecalculatesAndReincludesPayment(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOrderAndPayment(t, database, "paid", "25", "seen", 2) // TST-003a / CHN-016
+}
+
+func TestRecalculateBalanceOwnedTransfersUsesIndexesWithoutOverlap(t *testing.T) {
+	ctx := context.Background()
+	database := testOrderStore(t)
+	if _, err := database.normal.Exec(`INSERT INTO addresses(id,hd_index,address,state,created_at) VALUES
+		(1,1,'TSource','assigned',1),(2,2,'TRecipient','assigned',1)`); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := int64(1)
+	if err := database.CommitBlock(ctx, BlockRecord{Height: 1, ID: "B1", ParentID: "B0", Timestamp: 1}, 64, func(write *BlockWrite) error {
+		for _, payment := range []PaymentRecord{
+			{TxID: "fund", Direction: "in", BlockHeight: 1, BlockID: "B1", BlockTimestamp: 1, FromAddress: "TPayer", ToAddress: "TSource", AddressID: &sourceID, Asset: "TRX", AmountRaw: "100", Status: "confirmed", DetectedAt: 1},
+			{TxID: "owned", Direction: "out", BlockHeight: 1, BlockID: "B1", BlockTimestamp: 1, FromAddress: "TSource", ToAddress: "TRecipient", AddressID: &sourceID, Asset: "TRX", AmountRaw: "30", Status: "confirmed", DetectedAt: 1},
+			{TxID: "self", Direction: "out", BlockHeight: 1, BlockID: "B1", BlockTimestamp: 1, FromAddress: "TSource", ToAddress: "TSource", AddressID: &sourceID, Asset: "TRX", AmountRaw: "5", Status: "confirmed", DetectedAt: 1},
+			{TxID: "pending", Direction: "out", BlockHeight: 1, BlockID: "B1", BlockTimestamp: 1, FromAddress: "TSource", ToAddress: "TRecipient", AddressID: &sourceID, Asset: "TRX", AmountRaw: "7", Status: "seen", DetectedAt: 1},
+		} {
+			if _, err := write.UpsertPayment(payment); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		id                 int64
+		confirmed, pending string
+	}{{1, "65", "-7"}, {2, "30", "7"}} {
+		balance, err := database.Balance(ctx, want.id, "TRX")
+		if err != nil || balance.ConfirmedRaw != want.confirmed || balance.PendingRaw != want.pending {
+			t.Fatalf("balance %d = (%s,%s), want (%s,%s), err=%v", want.id, balance.ConfirmedRaw, balance.PendingRaw, want.confirmed, want.pending, err)
+		}
+	}
+
+	rows, err := database.normal.QueryContext(ctx, "EXPLAIN QUERY PLAN "+balancePaymentsQuery, sourceID, "TRX", sourceID, "TRX", sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"idx_payments_addr_asset", "idx_payments_to_address"} {
+		if !strings.Contains(plan.String(), index) {
+			t.Fatalf("balance query plan does not use %s: %s", index, plan.String())
+		}
+	}
 }
 
 func assertOrderAndPayment(t *testing.T, database *Store, orderStatus, received, paymentStatus string, cursor int64) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
@@ -93,7 +95,12 @@ func (s *Server) createWithdrawal(w http.ResponseWriter, r *http.Request) {
 		FromAddress: request.FromAddress, ToAddress: request.ToAddress, Asset: request.Asset, AmountRaw: raw.String(),
 		AmountUSD: usd, DailyLimitUSD: cfg.DailyLimitUSD, RequestedBy: state.keyName, IP: r.RemoteAddr, Now: time.Now()})
 	if err != nil {
-		s.writeWithdrawalError(w, err)
+		var details map[string]any
+		if cfg.RequireTOTP {
+			// API-022: synchronous rejection happens after the single-use code was consumed.
+			details = map[string]any{"totp_consumed": true}
+		}
+		s.writeWithdrawalErrorDetails(w, err, details)
 		return
 	}
 	status := http.StatusOK
@@ -113,21 +120,37 @@ func (s *Server) getWithdrawal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listWithdrawals(w http.ResponseWriter, r *http.Request) {
-	limit, _, err := pagination(r, false)
+	limit, cursor, err := pagination(r, false)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
 		return
 	}
-	withdrawals, err := s.store.ListWithdrawals(r.Context(), r.URL.Query().Get("status"), limit)
+	var beforeCreatedAt int64
+	var beforeID string
+	if cursor != "" {
+		createdAt, id, found := strings.Cut(cursor, "\x00")
+		beforeCreatedAt, err = strconv.ParseInt(createdAt, 10, 64)
+		if !found || err != nil || id == "" || strings.ContainsRune(id, '\x00') {
+			writeError(w, http.StatusBadRequest, "invalid_pagination", "cursor is invalid", nil)
+			return
+		}
+		beforeID = id
+	}
+	withdrawals, err := s.store.ListWithdrawals(r.Context(), r.URL.Query().Get("status"), beforeCreatedAt, beforeID, limit+1)
 	if err != nil {
 		s.writeWithdrawalError(w, err)
 		return
 	}
-	items := make([]map[string]any, 0, len(withdrawals))
-	for _, withdrawal := range withdrawals {
+	items := make([]map[string]any, 0, min(len(withdrawals), limit))
+	for _, withdrawal := range withdrawals[:min(len(withdrawals), limit)] {
 		items = append(items, s.withdrawalJSON(withdrawal))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	next := ""
+	if len(withdrawals) > limit {
+		last := withdrawals[limit-1]
+		next = encodeCursor(strconv.FormatInt(last.CreatedAt, 10) + "\x00" + last.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next})
 }
 
 func (s *Server) withdrawalLimits(w http.ResponseWriter, r *http.Request) {
@@ -348,21 +371,25 @@ func zeroIfEmpty(value string) string {
 }
 
 func (s *Server) writeWithdrawalError(w http.ResponseWriter, err error) {
+	s.writeWithdrawalErrorDetails(w, err, nil)
+}
+
+func (s *Server) writeWithdrawalErrorDetails(w http.ResponseWriter, err error, details map[string]any) {
 	switch {
 	case errors.Is(err, store.ErrWithdrawalNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "withdrawal was not found", nil)
 	case errors.Is(err, store.ErrIdempotencyReuse):
-		writeError(w, http.StatusConflict, "idempotency_key_reuse", err.Error(), nil)
+		writeError(w, http.StatusConflict, "idempotency_key_reuse", err.Error(), details)
 	case errors.Is(err, store.ErrBalanceDrift):
-		writeError(w, http.StatusConflict, "balance_drift", err.Error(), nil)
+		writeError(w, http.StatusConflict, "balance_drift", err.Error(), details)
 	case errors.Is(err, store.ErrDailyLimit):
-		writeError(w, http.StatusConflict, "daily_limit_exceeded", err.Error(), nil)
+		writeError(w, http.StatusConflict, "daily_limit_exceeded", err.Error(), details)
 	case errors.Is(err, store.ErrInsufficientFunds):
-		writeError(w, http.StatusConflict, "insufficient_confirmed_balance", err.Error(), nil)
+		writeError(w, http.StatusConflict, "insufficient_confirmed_balance", err.Error(), details)
 	case errors.Is(err, store.ErrSourceUnavailable), errors.Is(err, sql.ErrNoRows):
 		writeError(w, http.StatusBadRequest, "invalid_source", "source address is unavailable", nil)
 	case errors.Is(err, store.ErrWithdrawalState):
-		writeError(w, http.StatusConflict, "invalid_state", err.Error(), nil)
+		writeError(w, http.StatusConflict, "invalid_state", err.Error(), details)
 	default:
 		s.logger.Error("withdrawal API failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)

@@ -36,13 +36,13 @@ func TestBAL001AttributionRecomputesAndDriftClearIsAudited(t *testing.T) {
 	if err := database.normal.QueryRow("SELECT pending_raw FROM balances WHERE address_id = ? AND asset = 'USDT'", addressID).Scan(&pending); err != nil || pending != "5" {
 		t.Fatalf("attribution balance = %q, %v", pending, err)
 	}
-	if _, err := database.normal.Exec("UPDATE balances SET drift_detected = 1 WHERE address_id = ? AND asset = 'USDT'", addressID); err != nil {
+	if _, err := database.normal.Exec("UPDATE balances SET chain_raw = '4', drift_detected = 1 WHERE address_id = ? AND asset = 'USDT'", addressID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.BalanceForWithdrawal(ctx, order.Address, "USDT"); !errors.Is(err, ErrBalanceDrift) {
 		t.Fatalf("drifting withdrawal balance = %v", err)
 	}
-	if err := database.ClearBalanceDrift(ctx, order.Address, "operator", "127.0.0.1", time.Unix(3, 0)); err != nil {
+	if err := database.ClearBalanceDrift(ctx, order.Address, "USDT", "4", "operator", "127.0.0.1", time.Unix(3, 0)); err != nil {
 		t.Fatal(err)
 	}
 	var audits int
