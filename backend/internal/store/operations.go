@@ -73,6 +73,7 @@ type OperationalMetrics struct {
 	IPNQueue           map[string]uint64 `json:"ipn_queue"`
 	Withdrawals        map[string]uint64 `json:"withdrawals"`
 	NeedsOperator      uint64            `json:"needs_operator"`
+	FundedUnresolved   uint64            `json:"funded_terminal_unresolved"`
 	AddressesNeeding   uint64            `json:"addresses_needing_resources"`
 	AddressesFunded    uint64            `json:"addresses_funded"`
 	BalanceDrift       uint64            `json:"balance_drift"`
@@ -252,6 +253,14 @@ func (s *Store) OperationalMetrics(ctx context.Context) (OperationalMetrics, err
 		return metrics, err
 	}
 	metrics.NeedsOperator = metrics.Withdrawals["needs_operator"]
+	// Grouping orders by status alone cannot answer this: it would keep counting
+	// orders the operator has already resolved, so the alarm would never return
+	// to zero (ORD-005b, ORD-005d). Served by idx_orders_funded_terminal.
+	if err := s.normal.QueryRowContext(ctx, `SELECT COUNT(*) FROM orders
+		WHERE status IN ('expired_funded','cancelled_funded') AND resolution IS NULL`).
+		Scan(&metrics.FundedUnresolved); err != nil {
+		return metrics, err
+	}
 	if err := s.normal.QueryRowContext(ctx, "SELECT COUNT(*) FROM addresses WHERE needs_resources=1").Scan(&metrics.AddressesNeeding); err != nil {
 		return metrics, err
 	}
