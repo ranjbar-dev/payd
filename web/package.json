@@ -1,0 +1,33 @@
+{
+  "name": "payd-dashboard",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "prebuild": "node scripts/generate-payd-allowlist.mjs",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import \"data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register(\\\"data:text/javascript,import{pathToFileURL}from'node:url';const root=pathToFileURL(process.cwd()+'/');export async function resolve(s,c,n){if(s==='server-only')return{url:'data:text/javascript,',shortCircuit:true};if(s.startsWith('@/'))return{url:new URL(s.slice(2)+'.ts',root).href,shortCircuit:true};return n(s,c)}\\\",pathToFileURL('./'))\" --test lib/no-coercion.test.ts lib/proxy-no-retry.test.ts lib/session-expiry.test.ts",
+    "test:session": "node --experimental-strip-types --import \"data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register(\\\"data:text/javascript,export async function resolve(s,c,n){return s==='server-only'?{url:'data:text/javascript,',shortCircuit:true}:n(s,c)}\\\",pathToFileURL('./'))\" --test lib/session.test.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "lucide-react": "^1.31.0",
+    "next": "^16.3.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-hook-form": "^7.85.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3"
+  }
+}

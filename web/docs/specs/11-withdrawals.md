@@ -40,7 +40,7 @@ needs_operator   : outcome could not be determined automatically
 |---|---|
 | WWD-010 | `rejected` and `failed` MUST be rendered with distinct labels and distinct explanatory text. Backend `WDR-002b` separates them precisely: `rejected` means no funds could have moved; `failed` means a broadcast was attempted and the chain was checked. An operator who reads them as synonyms will treat a `failed` as safely repeatable |
 | WWD-011 | `needs_operator` MUST render at critical severity everywhere it appears, including in lists |
-| WWD-012 | The progress states (`awaiting_resources`, `awaiting_energy`, `signing`, `broadcast`) MUST show elapsed time in state. `awaiting_energy` is bounded by `energy.poll_timeout` and normally takes up to 90 seconds (backend `WDR-009g`); a withdrawal sitting there for ten minutes is a fault |
+| WWD-012 | The progress states (`awaiting_resources`, `awaiting_energy`, `signing`, `broadcast`) MUST show elapsed time in state, measured from `status_updated_at` — the moment the row entered its current status. It MUST NOT be measured from `created_at`: that is time since the request, which for a withdrawal that moved through three states says nothing about the one it is stuck in. `awaiting_energy` is bounded by `energy.poll_timeout` and normally takes up to 90 seconds (backend `WDR-009g`); a withdrawal sitting there for ten minutes is a fault |
 | WWD-013 | The UI MUST NOT display a progress percentage or an ETA. The engine does not provide one and a fabricated one invites an operator to intervene |
 
 ## 11.2 List
@@ -61,7 +61,7 @@ needs_operator   : outcome could not be determined automatically
 |---|---|
 | WWD-030 | Detail MUST render every field backend `API-017` guarantees: `status`, `failure_reason`, `txid`, `resolved_by`, and the raw `broadcast_response`. The requirement exists so any terminal outcome is explicable without a chain lookup, and the UI MUST NOT hide any of them behind a "show details" toggle |
 | WWD-031 | `broadcast_response` MUST be rendered as raw, selectable, monospace text. It is the node's own words and the operator may need to quote it |
-| WWD-032 | `resolved_by` MUST be rendered with its meaning: `chain_lookup` (the engine found the transaction), `expiration` (confirmed absent past expiry), `operator` (a human recorded the outcome) |
+| WWD-032 | `resolved_by` MUST be rendered with its meaning, using the values the engine actually writes: `chain_absence` (the transaction was confirmed absent from the chain), `resource_acquisition` (it failed before broadcast, while sourcing energy or bandwidth), `operator` (a human recorded the outcome under `WWD-040`). An unrecognised value MUST render raw rather than be mapped to the nearest known one |
 | WWD-033 | `txid` MUST always be shown when present, with a Tronscan link, **including for `failed` and `needs_operator`**. The txid is persisted before broadcast (backend `WDR-015`) precisely so an ambiguous outcome is checkable, and backend `WDR-026` expects the operator to use it |
 | WWD-034 | **Ambiguous-outcome panel.** When a withdrawal is `needs_operator`, or when the submission itself timed out, the UI MUST render a fixed panel: (1) the funds may or may not have moved; (2) the txid, with a Tronscan link, as the way to find out; (3) the last lookup error; (4) that the service will not attempt anything further; (5) that recording an outcome is a decision record, not an action. It MUST contain no control that submits a transaction |
 | WWD-035 | The resource breakdown MUST show `energy_source` (`existing` \| `rented` \| `self_delegated` \| `burned`), `energy_cost_trx`, `energy_used`, `bandwidth_source` (`free` \| `topup` \| `delegated` \| `burned`), and `fee_raw`, each labelled |
@@ -124,7 +124,7 @@ Backend `API-032`: zero state writes, no TOTP, a safe preflight.
 
 | ID | Requirement |
 |---|---|
-| WWD-070 | The confirmation MUST restate source, destination, asset, amount, projected energy source, and projected cost, read from the estimate response rather than from the form inputs (`UI-060`) |
+| WWD-070 | The confirmation MUST restate source, destination, asset, amount, projected energy source, and projected cost, read from the estimate response rather than from the form inputs (`UI-060`). The estimate echoes `from_address`, `to_address`, `asset`, `amount`, `amount_raw` and `amount_usd` for exactly this purpose, and `amount` is re-formatted from the parsed base units — so an amount the parser normalised is visible here, at the last point before authorisation. The wizard MUST NOT substitute its own form state for any of the six, even where it believes they match |
 | WWD-071 | The full destination address MUST be shown untruncated, in monospace, for visual verification |
 | WWD-072 | The payd TOTP code MUST be entered here, at the moment of submission, in a `TotpField` (`AUTH-042`) |
 | WWD-073 | The submit button MUST be labelled with the action and amount, e.g. "Withdraw 100.00 USDT", and MUST disable on click until the response arrives (`UI-061`, `UI-062`) |
@@ -143,6 +143,8 @@ Backend `API-032`: zero state writes, no TOTP, a safe preflight.
 | WWD-084 | **4xx validation errors** MUST be mapped to the field that caused them. Backend `WDR-002a` moved this validation to be synchronous specifically so the dashboard could show a reason, rather than a withdrawal failing out of band where the dashboard could not see it |
 | WWD-085 | **503** MUST distinguish stale prices (backend `WDR-006b`) from other causes, and MUST state that the withdrawal was not created |
 | WWD-086 | **Timeout / 502 / 504** MUST render the ambiguous-outcome panel (`WWD-034`) with an additional instruction: check the withdrawal list for a row created in the last minute before doing anything else. The request may have reached payd, consumed the TOTP code, and created the row |
+| WWD-086a | **Every 5xx on the create path MUST be treated as ambiguous**, not only 502 and 504. A 500 can be returned AFTER the row exists: `store.CreateWithdrawal` commits the transaction and then re-reads the row, and a failure in either `tx.Commit()` or that read returns an error the API renders as 500 with the withdrawal already written. A UI that calls a 500 "not created" and offers a fresh idempotency key turns one payout into two — which is the precise failure `WWD-005` exists to prevent. `503` is the exception and is genuinely definite: every 503 path (`withdrawals_disabled`, `price_unavailable`, `estimator_unavailable`) returns before any write |
+| WWD-086b | The ambiguous-outcome panel MUST NOT offer "create a new withdrawal", clear the idempotency key, or expose any other path to a fresh key. `WWD-004` permits a new withdrawal only where the operator has ESTABLISHED that no payout occurred, and the ambiguous panel exists precisely because that has not been established |
 | WWD-087 | After **any** error, the wizard MUST NOT retain the entered TOTP code, and MUST NOT resubmit on its own under any circumstances |
 
 ## 11.6 `needs_operator` worklist (`/withdrawals/needs-operator`)

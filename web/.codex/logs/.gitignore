@@ -1,0 +1,6 @@
+# Spawn logs contain full sub-agent diffs and test output. They are working
+# artefacts for a human reading a run, never committed: a log that captures a
+# test's environment values would otherwise put them in the repository, which
+# is exactly what lib/env.ts refuses to allow for SESSION_SECRET.
+*
+!.gitignore

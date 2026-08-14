@@ -25,9 +25,10 @@ Pool states: `free → assigned → cooling → free`, plus `disabled`.
 | WADR-003 | The four states MUST be visually distinct, and `cooling` MUST show its remaining time. Cooldown exists because reuse plus late payment is the primary attribution hazard (backend §8.1); an operator seeing "cooling 4m" understands why the address is not available |
 | WADR-004 | An `assigned` address MUST link to its order |
 | WADR-005 | The resource wallet MUST be identifiable in the list and MUST be shown as permanently `disabled` and never poolable (backend `POOL-008`/`CFG-013`) |
-| WADR-006 | Filters: state, has-balance, needs-resources, drift-detected, asset |
+| WADR-006 | Filters: state, has-balance, needs-resources, drift-detected, asset. Every one MUST be a server-side query — `state`, `asset` and `drift` as parameters on `GET /wallets`, has-balance as `GET /wallets/with-balance`, needs-resources as `GET /wallets/needs-resources`. The UI MUST NOT filter the returned page in the browser: a cursor page is not the pool, and filtering it client-side reports "3 disabled addresses" when the pool holds thirty (`DAT-020`) |
 | WADR-007 | A `disabled` address MUST remain listed with its history. Disabling removes it from rotation, it does not delete it (backend `POOL-007`) |
 | WADR-008 | The list MUST show pool health: total addresses, free count against `wallet.pool_min_free`, and total against `wallet.pool_max_size` from `GET /config`. Backend `LIF-003` fails order creation with 503 at the ceiling, and that ceiling should be visible before it is hit |
+| WADR-008a | Both counts MUST come from `GET /stats` `addresses`, which reports the pool grouped by state. They MUST NOT be counted from the loaded page: `GET /wallets` is cursor-paginated and a page count is not a pool size. The same rule that produced `WOVW-004a` for the alarm counters applies here |
 | WADR-009 | Tier B polling (30s) |
 
 ## 10.3 Balance drift
@@ -49,7 +50,7 @@ drift-flagged address cannot be withdrawn from (backend `WDR-002a`).
 
 | ID | Requirement |
 |---|---|
-| WADR-030 | Detail MUST render everything `GET /wallets/{address}` returns: `hd_index`, state, per-asset balances, energy and bandwidth figures, `needs_resources`, drift flags, assignment history, `checked_at` |
+| WADR-030 | Detail MUST render everything `GET /wallets/{address}` returns: `hd_index`, state, per-asset balances, energy and bandwidth figures, `needs_resources`, drift flags, the current assignment (`assigned_order_id`, `cooling_until`), and `checked_at`. Per-address assignment history is NOT retained by the backend and MUST NOT be implied: the address's orders and payments lists are the history, and the assigned order carries its own window through `created_at` and `address_released_at` |
 | WADR-031 | The payment history MUST be paginated per `API-025` and MUST show both directions |
 | WADR-032 | Energy and bandwidth MUST each render `available`, `limit`, `required`, and `sufficient`, not a single verdict (backend `API-013`) |
 | WADR-033 | `can_withdraw` MUST render per asset, since TRX transfers need no energy (backend `API-011`). One green dot for the whole address is exactly the v1.1 bug that reported `can_withdraw: true` for an address with no bandwidth |
@@ -63,7 +64,7 @@ drift-flagged address cannot be withdrawn from (backend `WDR-002a`).
 | ID | Requirement |
 |---|---|
 | WADR-040 | This view MUST render `GET /wallets/needs-resources` and MUST NOT paginate it (`DAT-025`) — the endpoint returns the complete set and ignores `limit`/`cursor` |
-| WADR-041 | Each row MUST show `estimated_burn_trx` and `estimated_rent_trx` together, so the real choice is visible (backend `API-010`) |
+| WADR-041 | Each row MUST show `estimated_burn_trx` and `estimated_rent_trx` together, so the real choice is visible (backend `API-010`). **Known gap:** the backend does not currently compute `estimated_rent_trx` on this endpoint, so it is always absent and `WADR-043`'s "provider unavailable" is what renders. The UI MUST be built to display it the moment the field appears, and MUST NOT substitute a burn figure or a client-side estimate for it |
 | WADR-042 | `energy_fee_sun` MUST be displayed alongside the burn estimate. It is a governance-controlled chain parameter that has been raised by proposal more than once; at 210 sun the same transfer costs twice what it does at 100 (backend §12.2) |
 | WADR-043 | An omitted `estimated_rent_trx` MUST render as "provider unavailable", never as zero or as a stale figure. Backend `API-012` omits it deliberately when energy is disabled or the provider is unreachable |
 | WADR-044 | An omitted `estimated_burn_trx` MUST render as "chain parameters not yet read", linking to the chain params card. Backend `RES-022` holds withdrawals rather than assuming a price, and this is the operator's warning that withdrawals are blocked |

@@ -60,6 +60,7 @@ identity — the label is always present.
 | UI-031 | An address MUST link to its detail page inside the dashboard, not to a block explorer. The dashboard knows more about it than Tronscan does |
 | UI-032 | A txid MUST render truncated with a copy button and an explicit **external** link to Tronscan, marked with an external-link icon. Backend `WDR-026` expects the operator to check Tronscan directly for `needs_operator`, so this link is functional, not decorative |
 | UI-033 | The Tronscan base URL MUST be configurable, since mainnet and Nile testnet differ. A hardcoded mainnet link on a testnet deployment sends the operator to a "not found" page and invites the conclusion that the transaction failed |
+| UI-033a | It MUST come from the server-only `TRONSCAN_BASE_URL` (`WST-020a`), read in a server component and provided to the client tree through one React context. It MUST NOT be a `NEXT_PUBLIC_` variable, and no component MAY carry its own fallback literal — a per-component default is how one page keeps linking to mainnet after the deployment moves to Nile |
 | UI-034 | ULIDs (order, withdrawal, IPN event ids) MUST render truncated with copy, and MUST be searchable in full |
 | UI-035 | Every entity detail page MUST show the full, untruncated id somewhere selectable |
 
