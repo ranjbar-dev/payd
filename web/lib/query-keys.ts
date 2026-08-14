@@ -61,6 +61,7 @@ export const queryKeys = {
   withdrawals: {
     ...resource("withdrawals"),
     limits: () => ["withdrawals", "limits"] as const,
+    needsOperator: () => ["withdrawals", "needs-operator"] as const,
   },
   workers: (value?: QueryFilters) => ["workers", filters(value)] as const,
 } as const;
