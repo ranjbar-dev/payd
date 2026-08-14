@@ -10,3 +10,4 @@ payd.*.yaml
 !payd.example.yaml
 
 *.exe
+*.log
