@@ -60,6 +60,7 @@ export const queryKeys = {
   whoami: () => ["whoami"] as const,
   withdrawals: {
     ...resource("withdrawals"),
+    estimate: (address: string) => ["withdrawals", "estimate", address] as const,
     limits: () => ["withdrawals", "limits"] as const,
     needsOperator: () => ["withdrawals", "needs-operator"] as const,
   },
