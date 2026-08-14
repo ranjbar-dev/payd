@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useSessionExpiry } from "@/app/providers";
 import { Amount } from "@/components/data/amount";
@@ -20,8 +20,28 @@ type Draft = { from_address: string; to_address: string; asset: string; amount: 
 type FieldErrors = Partial<Record<"from_address" | "to_address" | "asset" | "amount", string>>;
 type CreateError = { status: number; code: string; details: Record<string, unknown> };
 type Submission = { kind: "existing"; withdrawal: Withdrawal } | { kind: "ambiguous"; lastError: string } | { kind: "error"; title: string; detail: string; allowNew: boolean };
+type StoredIdempotencyKey = { key: string; signature: string };
 
 const emptyDraft: Draft = { from_address: "", to_address: "", asset: "", amount: "", pasted: false };
+const idempotencyStorageKey = "payd_withdrawal_idempotency";
+
+function transferSignature(draft: Draft): string {
+  return JSON.stringify([draft.from_address, draft.to_address, draft.asset, draft.amount]);
+}
+
+function storedIdempotencyKey(): StoredIdempotencyKey | null {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem(idempotencyStorageKey) ?? "null");
+    return typeof value === "object" && value !== null && "key" in value && "signature" in value && typeof value.key === "string" && typeof value.signature === "string" ? value as StoredIdempotencyKey : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeIdempotencyKey(key: string, signature: string): void {
+  // An idempotency key is not a secret; persist it with only its transfer signature to prevent a second payout after navigation.
+  sessionStorage.setItem(idempotencyStorageKey, JSON.stringify({ key, signature }));
+}
 
 function isPrecisionValid(value: string, decimals: number | undefined): boolean {
   const pieces = value.split(".");
@@ -90,6 +110,10 @@ export function WithdrawalWizard() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submission, setSubmission] = useState<Submission | null>(null);
 
+  useEffect(() => {
+    setIdempotencyKey(storedIdempotencyKey()?.key ?? null);
+  }, []);
+
   const sources = useQuery(paydQueryOptions({ queryKey: queryKeys.wallets.withBalanceAll(), queryFn: () => allWallets(["wallets", "with-balance"]), polling: { tier: "D" } }));
   const knownAddresses = useQuery(paydQueryOptions({ queryKey: queryKeys.wallets.pooledAll(), queryFn: () => allWallets(["wallets"]), polling: { tier: "D" } }));
   const assets = useQuery(paydQueryOptions({ queryKey: queryKeys.assets(), queryFn: () => paydRequest<AssetsResponse>(["assets"]), polling: { tier: "D" } }));
@@ -123,10 +147,15 @@ export function WithdrawalWizard() {
   };
   const openConfirmation = () => {
     if (!estimate?.can_proceed) return;
-    setIdempotencyKey((current) => current ?? crypto.randomUUID());
+    const signature = transferSignature(draft);
+    const stored = storedIdempotencyKey();
+    const key = stored?.signature === signature ? stored.key : crypto.randomUUID();
+    if (stored?.signature !== signature) storeIdempotencyKey(key, signature);
+    setIdempotencyKey(key);
     setStep(3);
   };
   const startNew = () => {
+    sessionStorage.removeItem(idempotencyStorageKey);
     setIdempotencyKey(null);
     setEstimate(null);
     setSubmission(null);
@@ -142,7 +171,7 @@ export function WithdrawalWizard() {
       }
       setSubmission({ kind: "existing", withdrawal: result.withdrawal });
     } catch (error) {
-      if (isPaydError(error) && error.status === 503) {
+      if (typeof error === "object" && error !== null && "status" in error && (error as CreateError).status === 503) {
         const payd = error as CreateError;
         setSubmission({ kind: "error", title: payd.code === "price_unavailable" ? "Price is stale or unavailable" : "Withdrawal service unavailable", detail: payd.code === "price_unavailable" ? "payd has no fresh price for this asset. The withdrawal was not created." : "payd refused this withdrawal while the service is unavailable. The withdrawal was not created.", allowNew: true });
         return;

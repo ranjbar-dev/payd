@@ -18,17 +18,20 @@ const { proxyPaydRequest } = await import("../app/api/payd/[...path]/route.ts");
 
 test("G1-5 POST calls payd once for timeout, errors, and connection reset", async () => {
   const originalFetch = globalThis.fetch;
-  const cases: [string, () => Promise<Response>][] = [
+  const cases: [string, () => Promise<Response>, RequestRedirect?][] = [
     ["timeout", async () => { throw new DOMException("timed out", "TimeoutError"); }],
     ["500", async () => new Response("server error", { status: 500 })],
     ["502", async () => new Response("bad gateway", { status: 502 })],
     ["429", async () => new Response("rate limited", { status: 429 })],
     ["connection reset", async () => { throw new Error("ECONNRESET"); }],
+    ["307 redirect", async () => new Response(null, { status: 307, headers: { location: "http://other.test/" } }), "manual"],
+    ["308 redirect", async () => new Response(null, { status: 308, headers: { location: "http://other.test/" } }), "manual"],
   ];
   try {
-    for (const [name, result] of cases) {
+    for (const [name, result, redirect] of cases) {
       let calls = 0;
-      globalThis.fetch = async () => { calls += 1; return result(); };
+      let requestRedirect: RequestRedirect | undefined;
+      globalThis.fetch = async (_input, init) => { calls += 1; requestRedirect = init?.redirect; return result(); };
       const session = createSession();
       const response = await proxyPaydRequest(new Request("http://dashboard.test/api/payd/orders", {
         method: "POST",
@@ -41,6 +44,7 @@ test("G1-5 POST calls payd once for timeout, errors, and connection reset", asyn
         body: "{}",
       }), { params: Promise.resolve({ path: ["orders"] }) });
       assert.equal(calls, 1, `${name} must not cause a re-sent POST`);
+      if (redirect) assert.equal(requestRedirect, redirect, `${name} must not be followed`);
       assert.ok(response.status >= 400);
     }
   } finally {

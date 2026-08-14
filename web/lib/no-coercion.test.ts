@@ -7,7 +7,8 @@ import ts from "typescript";
 const moneyNames = [
   "amount", "amount_raw", "amount_usd", "confirmed", "confirmed_raw", "pending", "chain_raw", "usd", "balance", "fee_raw",
   "total_cost_trx", "energy_cost_trx", "bandwidth_cost_trx", "network_fee_trx", "resource_fee_trx", "used_usd", "remaining_usd",
-  "daily_limit_usd", "price_usd", "min_deposit",
+  "daily_limit_usd", "price_usd", "min_deposit", "projected_trx_cost", "estimated_burn_trx", "estimated_rent_trx", "energy_fee_sun",
+  "trx_for_bandwidth_burn", "stake_trx", "provider_balance_trx", "max_burn_trx", "balance_warn_trx",
 ].join("|");
 const money = new RegExp(`^(?:${moneyNames})$`);
 const binaryOperators = new Set([
@@ -44,7 +45,8 @@ function detect(source: string, file = "inline.ts"): Hit[] {
       if ((ts.isIdentifier(callee) && ["Number", "parseFloat", "parseInt"].includes(callee.text))
         || (ts.isPropertyAccessExpression(callee) && ["toFixed", "toLocaleString"].includes(callee.name.text))) add(node);
     }
-    if (ts.isBinaryExpression(node) && binaryOperators.has(node.operatorToken.kind) && (isMoney(node.left) || isMoney(node.right))) add(node);
+    const nullCheck = ts.isBinaryExpression(node) && (node.left.kind === ts.SyntaxKind.NullKeyword || node.right.kind === ts.SyntaxKind.NullKeyword);
+    if (ts.isBinaryExpression(node) && !nullCheck && binaryOperators.has(node.operatorToken.kind) && (isMoney(node.left) || isMoney(node.right))) add(node);
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
@@ -62,6 +64,8 @@ function sourceFiles(directory: string): string[] {
 test("G1-2 detector catches a numeric money coercion", () => {
   assert.equal(detect("const value = Number(w.amount_usd);").length, 1);
   assert.equal(detect("const value = w.amount_usd + 1;").length, 1);
+  assert.equal(detect("const stale = estimate.projected_trx_cost > \"0\";").length, 1);
+  assert.equal(detect("const missing = estimate.estimated_burn_trx == null;").length, 0);
 });
 
 test("G1-2 permits only listed timestamp and TTL coercions", () => {
