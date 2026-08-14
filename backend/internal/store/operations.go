@@ -74,6 +74,11 @@ type OperationalMetrics struct {
 	Withdrawals        map[string]uint64 `json:"withdrawals"`
 	NeedsOperator      uint64            `json:"needs_operator"`
 	FundedUnresolved   uint64            `json:"funded_terminal_unresolved"`
+	// Addresses counts the pool by state, so pool health is one figure from one
+	// place rather than a page count the client happens to be holding (WADR-008).
+	// LIF-003 fails order creation at the ceiling; the ceiling should be visible
+	// before it is hit.
+	Addresses          map[string]uint64 `json:"addresses"`
 	AddressesNeeding   uint64            `json:"addresses_needing_resources"`
 	AddressesFunded    uint64            `json:"addresses_funded"`
 	BalanceDrift       uint64            `json:"balance_drift"`
@@ -234,7 +239,7 @@ func (s *Store) OperationalMetrics(ctx context.Context) (OperationalMetrics, err
 		Orders: make(map[string]uint64), Payments: make(map[string]uint64),
 		IPNDead: make(map[string]uint64), IPNQueue: make(map[string]uint64),
 		Withdrawals: make(map[string]uint64), EnergyPurchases: make(map[string]uint64),
-		EnergyCosts: make(map[string]string),
+		EnergyCosts: make(map[string]string), Addresses: make(map[string]uint64),
 	}
 	if err := groupedCounts(ctx, s.normal, "SELECT status, COUNT(*) FROM orders GROUP BY status", metrics.Orders); err != nil {
 		return metrics, err
@@ -263,6 +268,16 @@ func (s *Store) OperationalMetrics(ctx context.Context) (OperationalMetrics, err
 	}
 	if err := s.normal.QueryRowContext(ctx, "SELECT COUNT(*) FROM addresses WHERE needs_resources=1").Scan(&metrics.AddressesNeeding); err != nil {
 		return metrics, err
+	}
+	// Served by idx_addresses_state. Every state is reported, including ones with
+	// no rows, so a client can render "0 free" instead of an absent key.
+	if err := groupedCounts(ctx, s.normal, "SELECT state, COUNT(*) FROM addresses GROUP BY state", metrics.Addresses); err != nil {
+		return metrics, err
+	}
+	for _, state := range []string{"free", "assigned", "cooling", "disabled"} {
+		if _, ok := metrics.Addresses[state]; !ok {
+			metrics.Addresses[state] = 0
+		}
 	}
 	if err := s.normal.QueryRowContext(ctx, "SELECT COUNT(DISTINCT address_id) FROM balances WHERE drift_detected=1").Scan(&metrics.BalanceDrift); err != nil {
 		return metrics, err

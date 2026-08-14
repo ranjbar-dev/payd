@@ -50,6 +50,12 @@ type Payment struct {
 	Status         string
 	DetectedAt     int64
 	ConfirmedAt    *int64
+	// UnattributedReason is set only for unattributed payments (ORD-020).
+	UnattributedReason string
+	// WithdrawalID is the withdrawal this outbound payment settles, matched on
+	// txid. Empty for inbound rows and for outbound rows this service did not
+	// broadcast.
+	WithdrawalID string
 }
 
 // ListOrders provides API-025 keyset pagination; the ULID is the stable cursor.
@@ -165,7 +171,10 @@ func (s *Store) ListPaymentsFiltered(ctx context.Context, filter PaymentFilter) 
 func (s *Store) listPayments(ctx context.Context, where string, args []any, after int64, limit int) ([]Payment, error) {
 	query := `SELECT id, txid, log_index, direction, block_height, block_id, block_timestamp,
 		from_address, to_address, address_id, order_id, asset, amount_raw, is_dust, status,
-		detected_at, confirmed_at FROM payments WHERE ` + where
+		detected_at, confirmed_at, unattributed_reason,
+		COALESCE((SELECT w.id FROM withdrawals w
+			WHERE w.txid = payments.txid AND payments.direction = 'out' LIMIT 1), '')
+		FROM payments WHERE ` + where
 	if after > 0 {
 		query, args = query+" AND id > ?", append(args, after)
 	}
@@ -192,10 +201,12 @@ func (s *Store) listPayments(ctx context.Context, where string, args []any, afte
 func scanPayment(row rowScanner) (Payment, error) {
 	var payment Payment
 	var addressID, confirmedAt sql.NullInt64
-	var orderID sql.NullString
+	var orderID, reason sql.NullString
 	err := row.Scan(&payment.ID, &payment.TxID, &payment.LogIndex, &payment.Direction, &payment.BlockHeight,
 		&payment.BlockID, &payment.BlockTimestamp, &payment.FromAddress, &payment.ToAddress, &addressID,
-		&orderID, &payment.Asset, &payment.AmountRaw, &payment.IsDust, &payment.Status, &payment.DetectedAt, &confirmedAt)
+		&orderID, &payment.Asset, &payment.AmountRaw, &payment.IsDust, &payment.Status, &payment.DetectedAt, &confirmedAt,
+		&reason, &payment.WithdrawalID)
+	payment.UnattributedReason = reason.String
 	if addressID.Valid {
 		payment.AddressID = &addressID.Int64
 	}

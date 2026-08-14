@@ -64,6 +64,19 @@ func (m *Matcher) Match(write PaymentWriter, payment store.PaymentRecord) error 
 		} else {
 			payment.OrderID = nil
 			payment.Status = "unattributed" // ORD-020
+			// Which condition failed decides what the operator does next, and it is
+			// only knowable here: by the time anyone looks, the address may have been
+			// released or reassigned and recomputing would answer a different question.
+			// Reported in remedy order — an asset mismatch (ORD-002a) is a customer
+			// error with its own resolution, so it outranks a window miss.
+			switch {
+			case !active:
+				payment.UnattributedReason = "no_active_order"
+			case !assetMatches:
+				payment.UnattributedReason = "asset_mismatch"
+			default:
+				payment.UnattributedReason = "outside_window"
+			}
 		}
 	}
 	reactivated, err := write.UpsertPayment(payment)

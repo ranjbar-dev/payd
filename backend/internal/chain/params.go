@@ -16,7 +16,7 @@ import (
 	"payd/internal/store"
 )
 
-const chainParameterInterval = 6 * time.Hour
+const ParameterInterval = 6 * time.Hour
 
 type ParameterWorker struct {
 	read           *ReadClient
@@ -49,7 +49,7 @@ func NewParameterWorker(read *ReadClient, database *store.Store, logger *slog.Lo
 			return nil, errors.New("energy.max_burn_trx must be a non-negative decimal")
 		}
 	}
-	worker := &ParameterWorker{read: read, store: database, logger: logger, maxBurnTRX: maxBurnTRX, maxBurn: maxBurn, minEnergy: minEnergy, interval: chainParameterInterval}
+	worker := &ParameterWorker{read: read, store: database, logger: logger, maxBurnTRX: maxBurnTRX, maxBurn: maxBurn, minEnergy: minEnergy, interval: ParameterInterval}
 	worker.ceilingHealthy.Store(maxBurn == nil)
 	return worker, nil
 }

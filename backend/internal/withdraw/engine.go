@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	tickInterval = 2 * time.Second
+	TickInterval = 2 * time.Second
 	lookupEvery  = 15 * time.Second
 )
 
@@ -214,7 +214,7 @@ func (e *Engine) Run(ctx context.Context) {
 		} else {
 			e.logger.Error("withdrawal startup recovery", "error", err)
 		}
-		timer := time.NewTimer(tickInterval)
+		timer := time.NewTimer(TickInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -230,7 +230,7 @@ func (e *Engine) Run(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			e.logger.Error("withdrawal tick", "error", err)
 		}
-		timer := time.NewTimer(tickInterval)
+		timer := time.NewTimer(TickInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

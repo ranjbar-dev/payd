@@ -37,8 +37,13 @@ type IPNEvent struct {
 
 type DeadIPN struct {
 	ID, OrderID, Consumer, EventType, LastError string
-	Attempts, LastStatusCode                    int
-	CreatedAt                                   int64
+	// Payload is the JSON body as it was composed when the event was queued. It is
+	// a snapshot and is never rewritten, so it can and does disagree with the
+	// order's current state — which is the point: an operator deciding whether to
+	// redeliver needs to see what the consumer would actually receive (WIPN-031).
+	Payload                  string
+	Attempts, LastStatusCode int
+	CreatedAt                int64
 }
 
 type OrderEvent struct {
@@ -75,7 +80,7 @@ func (s *Store) OutboxCount(ctx context.Context, eventType string) (int, error) 
 
 func (s *Store) ListDeadIPN(ctx context.Context, consumer, after string, limit int) ([]DeadIPN, error) {
 	query := `SELECT id,COALESCE(order_id,''),consumer,event_type,attempts,COALESCE(last_error,''),
-		COALESCE(last_status_code,0),created_at FROM ipn_outbox WHERE status='dead'`
+		COALESCE(last_status_code,0),created_at,payload FROM ipn_outbox WHERE status='dead'`
 	args := []any{}
 	if consumer != "" {
 		query, args = query+" AND consumer=?", append(args, consumer)
@@ -93,7 +98,7 @@ func (s *Store) ListDeadIPN(ctx context.Context, consumer, after string, limit i
 	for rows.Next() {
 		var event DeadIPN
 		if err := rows.Scan(&event.ID, &event.OrderID, &event.Consumer, &event.EventType, &event.Attempts,
-			&event.LastError, &event.LastStatusCode, &event.CreatedAt); err != nil {
+			&event.LastError, &event.LastStatusCode, &event.CreatedAt, &event.Payload); err != nil {
 			return nil, err
 		}
 		events = append(events, event)

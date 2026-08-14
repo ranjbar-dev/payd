@@ -311,6 +311,9 @@ func (s *Server) orderJSON(order store.Order) (map[string]any, error) {
 		"received": received, "overpaid": overpaid, "status": order.Status, "consumer": order.Consumer,
 		"metadata": json.RawMessage(order.Metadata), "expires_at": order.ExpiresAt,
 		"created_at": order.CreatedAt, "updated_at": order.UpdatedAt,
+		// Closes the ORD-002b assignment window, whose bounds are otherwise
+		// invisible to a client trying to explain why a payment was attributed.
+		"address_released_at": order.AddressReleasedAt,
 	}
 	if order.ExternalRef != nil {
 		response["external_ref"] = *order.ExternalRef
@@ -369,7 +372,14 @@ func (s *Server) writeOrderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "address_pool_exhausted", "no deposit address is available", nil)
 	case errors.Is(err, price.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "price_unavailable", "asset price is unavailable or stale", nil)
-	case errors.Is(err, walletpool.ErrInvalidOrder), errors.Is(err, walletpool.ErrUnknownConsumer), errors.Is(err, store.ErrInvalidResolution):
+	// IPN-015: a consumer that is unknown or disabled has its own code. Sharing
+	// `invalid_order` with amount and asset validation meant a client could only
+	// guess which of the two it hit, and would name the wrong cause to the
+	// operator (WORD-041). `unknown_consumer` is the same code /ipn/test already
+	// uses for the same condition.
+	case errors.Is(err, walletpool.ErrUnknownConsumer):
+		writeError(w, http.StatusBadRequest, "unknown_consumer", err.Error(), nil)
+	case errors.Is(err, walletpool.ErrInvalidOrder), errors.Is(err, store.ErrInvalidResolution):
 		writeError(w, http.StatusBadRequest, "invalid_order", err.Error(), nil)
 	case errors.Is(err, store.ErrOrderRequiresForce):
 		writeError(w, http.StatusConflict, "order_funded", "funded order cancellation requires force", nil)

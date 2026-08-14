@@ -105,6 +105,15 @@ func (s *Server) attributePayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"attributed": true})
 }
 
+// nullableString renders an empty string as JSON null, so a client can tell
+// "not applicable" from "the backend does not know".
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func (s *Server) paymentJSON(payments []store.Payment) []map[string]any {
 	response := make([]map[string]any, 0, len(payments))
 	for _, payment := range payments {
@@ -121,7 +130,22 @@ func (s *Server) paymentJSON(payments []store.Payment) []map[string]any {
 			"block_timestamp": payment.BlockTimestamp, "from_address": payment.FromAddress,
 			"to_address": payment.ToAddress, "order_id": payment.OrderID, "asset": payment.Asset,
 			"amount": amount, "status": payment.Status, "detected_at": payment.DetectedAt,
-			"confirmed_at": payment.ConfirmedAt,
+			// WPAY-021: the integer units the transfer actually carried. `amount` is
+			// this value divided by the asset's configured decimals, so the two can
+			// disagree if that configuration ever changes; the raw figure is the one
+			// the chain settled.
+			"amount_raw": payment.AmountRaw,
+			"confirmed_at": payment.ConfirmedAt, "block_id": payment.BlockID,
+			// ORD-020: which attribution condition failed, judged when the matcher
+			// decided. Null for attributed payments.
+			"unattributed_reason": nullableString(payment.UnattributedReason),
+			// WPAY-005: the withdrawal this outbound row settles, matched on txid.
+			// Null for inbound rows and for outbound rows we did not broadcast.
+			"withdrawal_id": nullableString(payment.WithdrawalID),
+			// DET-007: below the asset's min_deposit. Dust still counts towards an
+			// order under ORD-005c, so a client that cannot see the flag cannot
+			// explain why a payment did or did not move the order along.
+			"is_dust": payment.IsDust,
 		})
 	}
 	return response

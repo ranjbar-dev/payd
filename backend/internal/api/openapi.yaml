@@ -98,7 +98,20 @@ paths:
     get:
       tags: [Operations]
       summary: List supervised worker health
-      description: Returns persisted heartbeat and error state for every worker. `last_tick_at` advances every tick, so a stalled worker shows as a growing `seconds_since_tick`; `last_error` is sticky and `error_count` cumulative, so a recovered fault stays visible. Requires scope `wallets:read`.
+      description: |
+        Returns persisted heartbeat and error state for every worker. `last_tick_at`
+        advances every tick, so a stalled worker shows as a growing
+        `seconds_since_tick`; `last_error` is sticky and `error_count` cumulative,
+        so a recovered fault stays visible.
+
+        `expected_interval_seconds` is that worker's configured tick cadence, so a
+        client can tell a stalled loop from an idle one without keeping its own copy
+        of these values. Cadences differ by three orders of magnitude — the IPN
+        dispatcher ticks every second, the chain-parameter worker every six hours —
+        so a single staleness threshold across all workers is meaningless. It is
+        null for a worker whose cadence is not known to this endpoint.
+
+        Requires scope `wallets:read`.
       x-required-scope: wallets:read
       x-requirements: [API-039, OPS-008]
       parameters:
@@ -117,7 +130,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [worker, last_tick_at, seconds_since_tick, last_error, error_count, restarts]
+                      required: [worker, last_tick_at, seconds_since_tick, last_error, error_count, restarts, expected_interval_seconds]
                       properties:
                         worker: {type: string}
                         last_tick_at: {type: [integer, 'null'], format: int64}
@@ -125,6 +138,7 @@ paths:
                         last_error: {type: string}
                         error_count: {type: integer, format: int64}
                         restarts: {type: integer, format: int64}
+                        expected_interval_seconds: {type: [integer, 'null'], format: int64}
                   next_cursor: {type: string}
 
   /api/v1/audit:
@@ -217,7 +231,19 @@ paths:
     get:
       tags: [Operations]
       summary: Read redacted effective configuration
-      description: Returns an allowlisted configuration projection with no credentials. Requires scope `admin:read`.
+      description: |
+        Returns an allowlisted configuration projection with no credentials.
+
+        The projection is explicit, not a redaction pass: every field is a number,
+        a duration, a decimal string, or a name, so none is structurally capable of
+        holding an endpoint, key, secret, or hash. It carries the operator-visible
+        thresholds a client needs to say how close a live figure is to the limit
+        that will reject it — `energy.max_burn_trx`, `energy.balance_warn_trx`,
+        `price.stale_after_seconds`, `wallet.pool_min_free`, `wallet.pool_max_size`,
+        `wallet.cooldown_seconds` — so it does not have to keep a second copy of
+        the operator's configuration.
+
+        Requires scope `admin:read`.
       x-required-scope: admin:read
       x-requirements: [API-043, CFG-011]
       responses:
@@ -227,13 +253,31 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [assets, withdrawal, tron, orders, energy, consumers]
+                required: [assets, withdrawal, tron, orders, energy, price, wallet, consumers]
                 properties:
                   assets: {type: array, items: {type: object, additionalProperties: true}}
                   withdrawal: {type: object, additionalProperties: true}
                   tron: {type: object, additionalProperties: true}
                   orders: {type: object, additionalProperties: true}
-                  energy: {type: object, additionalProperties: true}
+                  energy:
+                    type: object
+                    required: [enabled, max_burn_trx, balance_warn_trx]
+                    properties:
+                      enabled: {type: boolean}
+                      max_burn_trx: {type: string}
+                      balance_warn_trx: {type: string}
+                  price:
+                    type: object
+                    required: [stale_after_seconds]
+                    properties:
+                      stale_after_seconds: {type: integer, format: int64}
+                  wallet:
+                    type: object
+                    required: [pool_min_free, pool_max_size, cooldown_seconds]
+                    properties:
+                      pool_min_free: {type: integer}
+                      pool_max_size: {type: integer}
+                      cooldown_seconds: {type: integer, format: int64}
                   consumers: {type: array, items: {type: string}}
 
   /api/v1/reports/volume:
@@ -476,13 +520,25 @@ paths:
                 amount: {$ref: '#/components/schemas/Amount'}
       responses:
         '200':
-          description: Read-only projection.
+          description: |
+            Read-only projection. The first six fields echo what the service understood the
+            request to be, so a confirmation screen can restate the transfer from this
+            response rather than from the operator's own inputs (UI-060). `amount` is
+            re-formatted from the parsed base units rather than copied from the request, so
+            an amount the parser normalised is visible before anyone authorises the
+            transfer.
           content:
             application/json:
               schema:
                 type: object
-                required: [can_proceed, confirmed_balance_sufficient, trx_for_resources_sufficient, projected_energy_source, projected_trx_cost, daily_cap_blocked, blocked_by]
+                required: [from_address, to_address, asset, amount, amount_raw, amount_usd, can_proceed, confirmed_balance_sufficient, trx_for_resources_sufficient, projected_energy_source, projected_trx_cost, daily_cap_blocked, blocked_by]
                 properties:
+                  from_address: {type: string, description: The source address as this service read it.}
+                  to_address: {type: string, description: The destination as this service read it. Echoed for visual verification before authorisation; it is NOT re-validated here beyond the check that already rejected an invalid one.}
+                  asset: {type: string}
+                  amount: {$ref: '#/components/schemas/Amount', description: The request amount re-formatted from its parsed base units. Compare it against what was typed — a difference means the parser normalised the input, and this is the last point before authorisation where that is visible.}
+                  amount_raw: {type: string, pattern: '^(0|[1-9][0-9]*)$', description: The same amount in the asset's integer base units, exactly what a created withdrawal would carry.}
+                  amount_usd: {type: string, description: The amount valued at the current quote, the figure that counts against the daily cap.}
                   can_proceed: {type: boolean, description: True only when no condition is blocking; the field callers should gate on.}
                   confirmed_balance_sufficient: {type: boolean, description: Whether the source holds enough of the asset being sent. Ignores resource costs.}
                   trx_for_resources_sufficient: {type: boolean, description: Whether the source holds enough TRX to pay projected_trx_cost. Always true for native TRX transfers and when no cost is projected.}
@@ -627,7 +683,9 @@ paths:
 
         **Consumer.** Determines where payment webhooks are delivered. Empty falls back to
         the configured default consumer; an unknown or disabled consumer is 400
-        `invalid_order`. A consumer cannot be changed after the order is created.
+        `unknown_consumer`, distinct from `invalid_order` so a client can say which of the
+        two it hit rather than guess. A consumer cannot be changed after the order is
+        created.
 
         **Other fields.** `ttl_seconds` of 0 (or absent) falls back to the configured
         default order TTL; the resulting `expires_at` is when an unpaid order expires and
@@ -643,7 +701,7 @@ paths:
       x-required-scope: orders:write
       x-requirements: [API-001, API-002, API-003, API-004, API-005, API-006, API-020, API-024]
       x-error-codes:
-        400: [invalid_request, invalid_order, invalid_amount]
+        400: [invalid_request, invalid_order, invalid_amount, unknown_consumer]
         401: [unauthorized]
         409: [external_ref_conflict]
         429: [rate_limited]
@@ -1024,11 +1082,21 @@ paths:
       tags: [Payments]
       summary: List orphaned payments
       description: |
-        Lists inbound transfers to a pooled address that the processor cannot attribute at
-        all — the address has no order that could own them, so no amount of matching will
-        fix them. Money that shows up here is real and sitting in the wallet; it needs a
-        human decision (refund the sender, or credit it to an order by hand with
-        `POST /api/v1/payments/{id}/attribute`).
+        Lists payments that were seen in a block which was later reorganised away, and
+        whose transaction has not reappeared within the reorg depth (CHN-017). This is NOT
+        the unattributed worklist — see `GET /api/v1/payments/unattributed` for transfers
+        that arrived but matched no order.
+
+        The distinction matters: an unattributed payment is real money sitting in the
+        wallet that needs an owner, while an orphaned payment is money that most likely
+        was never there. A row here usually means a customer was credited for a transfer
+        the chain no longer contains, so the order it was counting towards may have
+        reverted (CHN-014 emits `order.reverted`). The payment keeps its `order_id`
+        through orphaning, so that order stays visible.
+
+        There is no endpoint to restore or re-confirm an orphaned payment, and there must
+        be no such control in a client. Inclusion is a chain fact: if the transaction
+        reappears, the detector picks it up again by itself.
 
         Requires scope `orders:read`. Rate limit 100 requests/minute per API key.
 
@@ -1127,7 +1195,28 @@ paths:
         Requires scope `wallets:read`. Uses opaque cursor pagination.
       x-required-scope: wallets:read
       x-requirements: [API-003, API-014, API-020, API-025]
-      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: state
+          in: query
+          schema: {type: string, enum: [free, assigned, cooling, disabled]}
+          description: >-
+            Restrict to one pool state. Applied in the query, not to the returned page —
+            narrowing a cursor page in the client would describe the page rather than the
+            pool.
+        - name: asset
+          in: query
+          schema: {type: string}
+          description: >-
+            Restrict to addresses holding a balance in this asset, confirmed or pending.
+          example: USDT
+        - name: drift
+          in: query
+          schema: {type: string, enum: ['true']}
+          description: >-
+            Restrict to addresses where at least one asset disagrees with the chain.
+            Those cannot be withdrawn from until the drift is cleared.
       responses:
         '200': {description: Wallet page., content: {application/json: {schema: {$ref: '#/components/schemas/WalletPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -2110,10 +2199,26 @@ components:
           format: int64
           description: Unix seconds when the resolution was recorded.
           example: 1786280000
+        address_released_at:
+          type: [integer, 'null']
+          format: int64
+          description: >-
+            Unix seconds when the deposit address stopped belonging to this order. With
+            `created_at` it gives the **assignment window**: a payment is attributed to
+            this order only when its `block_timestamp` falls inside that window, so this
+            is what explains an attribution decision without a database query.
+
+            Null has two distinct meanings. While the order is open, the address is still
+            held and the window has no upper bound yet. Once the address has finished
+            cooling down and returned to the pool, the release time is cleared rather than
+            archived, so it is no longer knowable — the field does not fall back to the
+            next order's release time, because reporting another order's boundary as this
+            one's would be a wrong answer rather than a missing one.
+          example: 1786280400
     Payment:
       type: object
       additionalProperties: false
-      required: [id, txid, log_index, direction, block_height, block_timestamp, from_address, to_address, order_id, asset, amount, status, detected_at, confirmed_at]
+      required: [id, txid, log_index, direction, block_height, block_id, block_timestamp, from_address, to_address, order_id, asset, amount, status, detected_at, confirmed_at, is_dust, unattributed_reason, withdrawal_id, amount_raw]
       properties:
         id:
           type: integer
@@ -2157,8 +2262,12 @@ components:
         order_id:
           type: [string, 'null']
           description: >-
-            Order this payment counts towards. Null while unattributed, which is what the
-            unattributed and orphaned listings return.
+            Order this payment counts towards. Null while unattributed — which is what the
+            unattributed listing returns. NOT null on the orphaned listing when the payment
+            had been attributed before the reorg: orphaning sets the status and leaves the
+            attribution in place, so the order it was counting towards stays visible. That
+            is the whole point of the orphaned worklist — a reorg that reverted a paid
+            order to partial is the case an operator has to see (CHN-014).
           example: 01KZK772CKH6G9KTEM09TB7AFS
         asset:
           type: string
@@ -2168,6 +2277,14 @@ components:
           type: string
           description: Amount transferred, in whole asset units, as a decimal string.
           example: '1.5'
+        amount_raw:
+          type: string
+          description: >-
+            The same transfer in the asset's integer base units, exactly as the chain
+            recorded it. `amount` is this figure divided by the asset's configured
+            decimals, so the two disagree if that configuration is ever changed or is
+            wrong; this one is what actually moved.
+          example: '1500000'
         status:
           type: string
           description: >-
@@ -2186,6 +2303,55 @@ components:
           format: int64
           description: Unix seconds when it became irreversible; null until then.
           example: 1786277900
+        block_id:
+          type: string
+          description: >-
+            Hash of the block the transfer was included in. Together with `block_height`
+            it identifies the exact block, which is what distinguishes a re-included
+            transaction from an orphaned one after a chain reorganisation.
+          example: 0000000002f3a1b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8
+        unattributed_reason:
+          type: [string, 'null']
+          enum: [no_active_order, asset_mismatch, outside_window, null]
+          description: >-
+            For a payment with `status: unattributed`, which of the three attribution
+            conditions failed. Null for every attributed payment.
+
+            The three have different remedies, which is why the bare status is not
+            enough. `asset_mismatch` — the address had an active order, but for a
+            different asset: the customer pasted the deposit address into the wrong
+            wallet, and crediting it would hand them the wrong value. `outside_window` —
+            the transfer's block timestamp fell outside the order's assignment window,
+            typically a payment that arrived after the order expired. `no_active_order` —
+            the address held no order in a payable state at all.
+
+            Recorded when the matcher decides, not recomputed on read: by the time
+            anyone looks, the address may have been released or reassigned and the
+            order expired, so re-running the checks against current state could give a
+            different answer than the one that was actually made. Payments detected
+            before this field existed report null.
+          example: asset_mismatch
+        is_dust:
+          type: boolean
+          description: >-
+            True when the amount is below the asset's configured `min_deposit`. Dust is
+            recorded and credited to the address like any other payment, and it still
+            counts towards an order's total when the order is re-evaluated before expiry
+            (ORD-005c) — so a small top-up can be the difference between `expired` and
+            `paid`. The flag is what explains why a payment did or did not move an order
+            along.
+          example: false
+        withdrawal_id:
+          type: [string, 'null']
+          description: >-
+            The withdrawal this outbound payment settles, matched on transaction id.
+            Null for every inbound payment and for an outbound transfer this service
+            did not broadcast — a manual spend from a pool address, for example, which
+            is exactly the case an operator needs to be able to tell apart from a
+            withdrawal. Recorded here rather than derived by the client: no list
+            endpoint can look a withdrawal up by txid, so a client could only guess by
+            scanning pages.
+          example: 01J9Z3K5S6QW7E8R9T0Y1U2I3O
     CreateWithdrawalRequest:
       type: object
       additionalProperties: false
@@ -2224,7 +2390,7 @@ components:
     Withdrawal:
       type: object
       additionalProperties: false
-      required: [id, from_address, to_address, asset, amount, amount_raw, amount_usd, status, txid, failure_reason, resolved_by, broadcast_response, fee_raw, network_fee_trx, energy_used, energy_source, energy_cost_trx, bandwidth_source, bandwidth_cost_trx, resource_fee_trx, total_cost_trx, last_lookup_error, created_at, broadcast_at, confirmed_at]
+      required: [id, from_address, to_address, asset, amount, amount_raw, amount_usd, status, txid, failure_reason, resolved_by, broadcast_response, fee_raw, network_fee_trx, energy_used, energy_source, energy_cost_trx, bandwidth_source, bandwidth_cost_trx, resource_fee_trx, total_cost_trx, last_lookup_error, created_at, status_updated_at, broadcast_at, confirmed_at]
       properties:
         id:
           type: string
@@ -2348,6 +2514,16 @@ components:
           format: int64
           description: Unix seconds when the request was accepted.
           example: 1786279000
+        status_updated_at:
+          type: integer
+          format: int64
+          description: >-
+            Unix seconds when the withdrawal entered its current status. Every status
+            write sets it, so elapsed time in state is a stored fact rather than a guess
+            from `created_at`. `awaiting_energy` is bounded by the energy poll timeout and
+            normally clears in under 90 seconds; one sitting there for ten minutes is a
+            fault, and that is invisible against the request time alone.
+          example: 1786279045
         broadcast_at:
           type: [integer, 'null']
           format: int64
@@ -2475,9 +2651,19 @@ components:
           type: array
           items:
             type: object
-            required: [id, order_id, consumer, event_type, attempts, last_error, last_status_code, created_at]
+            required: [id, order_id, consumer, event_type, attempts, last_error, last_status_code, created_at, payload]
             properties:
               id: {type: string}
+              payload:
+                type: object
+                additionalProperties: true
+                description: >-
+                  The event body exactly as it was composed when the event was queued, so
+                  an operator can see what a redelivery would actually send. It is an
+                  immutable SNAPSHOT and is never rewritten: for an order-scoped event it
+                  can disagree with the order's current status, which is precisely what an
+                  operator needs to notice before redelivering a stale `order.paid` for an
+                  order that has since reverted.
               order_id: {type: string}
               consumer: {type: string}
               event_type: {type: string}
@@ -2611,9 +2797,17 @@ components:
           description: What the address holds, one entry per asset.
           items:
             type: object
-            required: [asset, confirmed, pending, drift_detected]
+            required: [asset, confirmed, confirmed_raw, pending, drift_detected]
             properties:
               asset: {type: string, example: USDT}
+              confirmed_raw:
+                type: string
+                description: >-
+                  The confirmed balance in base units, the same scale as `chain_raw`.
+                  Drift is the disagreement between these two figures, so both are needed
+                  to see its size and direction; comparing the formatted `confirmed`
+                  against `chain_raw` compares two different scales.
+                example: '142500000'
               confirmed:
                 type: string
                 description: >-

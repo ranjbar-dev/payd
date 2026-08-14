@@ -34,7 +34,12 @@ type WalletAddress struct {
 	BandwidthUsed      int64
 	NeedsResources     bool
 	ResourcesCheckedAt *int64
-	Balances           []WalletBalance
+	// CoolingUntil is set while the address is in cooldown (POOL-004); AssignedOrderID
+	// survives until POOL-005 returns the address to the pool, so the two together say
+	// which order still holds an address and for how much longer.
+	CoolingUntil    *int64
+	AssignedOrderID *string
+	Balances        []WalletBalance
 }
 
 type ResourceReading struct {
@@ -61,22 +66,55 @@ type ChainBalance struct {
 
 // WalletAddresses is the common read model for monitoring and the wallet API.
 func (s *Store) WalletAddresses(ctx context.Context, needsResourcesOnly bool) ([]WalletAddress, error) {
-	return s.walletAddressPage(ctx, needsResourcesOnly, false, 0, 0)
+	return s.walletAddressPage(ctx, WalletFilter{NeedsResources: needsResourcesOnly}, 0, 0)
+}
+
+// WalletFilter narrows a wallet page server-side. Filtering these in the client
+// would apply to the loaded cursor page only and misrepresent the pool's real
+// composition, which is the same defect DAT-020 forbids for every other list.
+type WalletFilter struct {
+	NeedsResources bool
+	ConfirmedOnly  bool
+	// State is one of free, assigned, cooling, disabled. Empty means every state.
+	State string
+	// Asset restricts to addresses holding a balance row for that asset, whether
+	// confirmed or pending — an address with pending funds in an asset is still an
+	// address that holds it.
+	Asset string
+	// DriftOnly restricts to addresses where at least one asset disagrees with the
+	// chain. Those cannot be withdrawn from at all (WDR-002a).
+	DriftOnly bool
 }
 
 // WalletAddressPage bounds API reads by address rather than joined balance rows (API-025).
 func (s *Store) WalletAddressPage(ctx context.Context, needsResourcesOnly bool, after int64, limit int) ([]WalletAddress, error) {
-	return s.walletAddressPage(ctx, needsResourcesOnly, false, after, limit)
+	return s.walletAddressPage(ctx, WalletFilter{NeedsResources: needsResourcesOnly}, after, limit)
 }
 
-func (s *Store) walletAddressPage(ctx context.Context, needsResourcesOnly, confirmedOnly bool, after int64, limit int) ([]WalletAddress, error) {
+// WalletAddressPageFiltered is WalletAddressPage with the API-014 filters applied.
+func (s *Store) WalletAddressPageFiltered(ctx context.Context, filter WalletFilter, after int64, limit int) ([]WalletAddress, error) {
+	return s.walletAddressPage(ctx, filter, after, limit)
+}
+
+func (s *Store) walletAddressPage(ctx context.Context, filter WalletFilter, after int64, limit int) ([]WalletAddress, error) {
 	selector := "SELECT a.id FROM addresses a WHERE a.id > ?"
 	args := []any{after}
-	if needsResourcesOnly {
+	if filter.NeedsResources {
 		selector += " AND a.needs_resources = 1"
 	}
-	if confirmedOnly {
+	if filter.ConfirmedOnly {
 		selector += " AND EXISTS (SELECT 1 FROM balances funded WHERE funded.address_id = a.id AND funded.confirmed_raw <> '0')"
+	}
+	if filter.State != "" {
+		selector += " AND a.state = ?"
+		args = append(args, filter.State)
+	}
+	if filter.Asset != "" {
+		selector += " AND EXISTS (SELECT 1 FROM balances held WHERE held.address_id = a.id AND held.asset = ?)"
+		args = append(args, filter.Asset)
+	}
+	if filter.DriftOnly {
+		selector += " AND EXISTS (SELECT 1 FROM balances drifted WHERE drifted.address_id = a.id AND drifted.drift_detected = 1)"
 	}
 	selector += " ORDER BY a.id"
 	if limit > 0 {
@@ -85,6 +123,7 @@ func (s *Store) walletAddressPage(ctx context.Context, needsResourcesOnly, confi
 	}
 	query := `SELECT a.id, a.hd_index, a.address, a.state, a.energy_limit, a.energy_used,
         a.bandwidth_limit, a.bandwidth_used, a.needs_resources, a.resources_checked_at,
+        a.cooling_until, a.assigned_order_id,
         b.asset, b.confirmed_raw, b.pending_raw, b.chain_raw, b.drift_detected
 		FROM addresses a JOIN (` + selector + `) page ON page.id = a.id
 		LEFT JOIN balances b ON b.address_id = a.id`
@@ -94,6 +133,7 @@ func (s *Store) walletAddressPage(ctx context.Context, needsResourcesOnly, confi
 func (s *Store) WalletAddress(ctx context.Context, address string) (WalletAddress, error) {
 	query := `SELECT a.id, a.hd_index, a.address, a.state, a.energy_limit, a.energy_used,
         a.bandwidth_limit, a.bandwidth_used, a.needs_resources, a.resources_checked_at,
+        a.cooling_until, a.assigned_order_id,
         b.asset, b.confirmed_raw, b.pending_raw, b.chain_raw, b.drift_detected
         FROM addresses a LEFT JOIN balances b ON b.address_id = a.id WHERE a.address = ?`
 	addresses, err := s.walletAddresses(ctx, query, []any{address})
@@ -108,12 +148,12 @@ func (s *Store) WalletAddress(ctx context.Context, address string) (WalletAddres
 
 // WalletAddressesWithConfirmedBalance returns withdrawal sources only; pending funds are never spendable (WDR-005).
 func (s *Store) WalletAddressesWithConfirmedBalance(ctx context.Context) ([]WalletAddress, error) {
-	return s.walletAddressPage(ctx, false, true, 0, 0)
+	return s.walletAddressPage(ctx, WalletFilter{ConfirmedOnly: true}, 0, 0)
 }
 
 // WalletAddressesWithConfirmedBalancePage returns a bounded withdrawal-source page (WDR-005, API-025).
 func (s *Store) WalletAddressesWithConfirmedBalancePage(ctx context.Context, after int64, limit int) ([]WalletAddress, error) {
-	return s.walletAddressPage(ctx, false, true, after, limit)
+	return s.walletAddressPage(ctx, WalletFilter{ConfirmedOnly: true}, after, limit)
 }
 
 func (s *Store) walletAddresses(ctx context.Context, query string, args []any) ([]WalletAddress, error) {
@@ -127,15 +167,21 @@ func (s *Store) walletAddresses(ctx context.Context, query string, args []any) (
 	var current *WalletAddress
 	for rows.Next() {
 		var item WalletAddress
-		var checked sql.NullInt64
-		var asset, confirmed, pending, chain sql.NullString
+		var checked, cooling sql.NullInt64
+		var asset, confirmed, pending, chain, assignedOrder sql.NullString
 		var drift sql.NullBool
 		if err := rows.Scan(&item.ID, &item.HDIndex, &item.Address, &item.State, &item.EnergyLimit,
 			&item.EnergyUsed, &item.BandwidthLimit, &item.BandwidthUsed, &item.NeedsResources,
-			&checked, &asset, &confirmed, &pending, &chain, &drift); err != nil {
+			&checked, &cooling, &assignedOrder, &asset, &confirmed, &pending, &chain, &drift); err != nil {
 			return nil, fmt.Errorf("scan wallet address: %w", err)
 		}
 		if current == nil || current.ID != item.ID {
+			if cooling.Valid {
+				item.CoolingUntil = &cooling.Int64
+			}
+			if assignedOrder.Valid {
+				item.AssignedOrderID = &assignedOrder.String
+			}
 			if checked.Valid {
 				item.ResourcesCheckedAt = &checked.Int64
 			}

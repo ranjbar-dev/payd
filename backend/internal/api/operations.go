@@ -5,8 +5,37 @@ import (
 	"strconv"
 	"time"
 
+	"payd/internal/chain"
+	"payd/internal/confirm"
+	"payd/internal/ipn"
+	"payd/internal/lifecycle"
 	"payd/internal/store"
+	walletpool "payd/internal/wallet"
+	"payd/internal/withdraw"
 )
+
+// workerIntervals reports each worker's configured tick cadence, so a client can
+// tell a stalled loop from an idle one without hardcoding a second copy of these
+// values (OPS-008, API-039). Every entry is the constant the worker itself ticks
+// on, or the live config value where the cadence is configurable — never a
+// literal restated here.
+func (s *Server) workerIntervals() map[string]time.Duration {
+	s.mu.RLock()
+	pollInterval, priceInterval := s.tron.PollInterval, s.price.Interval
+	s.mu.RUnlock()
+	return map[string]time.Duration{
+		"follower":              pollInterval,
+		"price":                 priceInterval,
+		"confirm":               confirm.PollInterval,
+		"chain_params":          chain.ParameterInterval,
+		"reconciler_balances":   walletpool.BalanceReconcileInterval,
+		"reconciler_safety_net": walletpool.SafetyNetInterval,
+		"lifecycle_10s":         lifecycle.ShortInterval,
+		"lifecycle_60s":         lifecycle.LongInterval,
+		"ipn":                   ipn.TickInterval,
+		"withdraw":              withdraw.TickInterval,
+	}
+}
 
 func (s *Server) workers(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, err := pagination(r, false)
@@ -21,15 +50,20 @@ func (s *Server) workers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC().Unix()
+	intervals := s.workerIntervals()
 	items := make([]map[string]any, 0, min(len(workers), limit))
 	for _, worker := range workers[:min(len(workers), limit)] {
 		var seconds any
 		if worker.LastTickAt != nil {
 			seconds = max(now-*worker.LastTickAt, 0)
 		}
-		items = append(items, map[string]any{"worker": worker.Worker, "last_tick_at": worker.LastTickAt,
+		item := map[string]any{"worker": worker.Worker, "last_tick_at": worker.LastTickAt,
 			"seconds_since_tick": seconds, "last_error": worker.LastError, "error_count": worker.ErrorCount,
-			"restarts": worker.Restarts})
+			"restarts": worker.Restarts, "expected_interval_seconds": nil}
+		if expected, known := intervals[worker.Worker]; known {
+			item["expected_interval_seconds"] = int64(expected / time.Second)
+		}
+		items = append(items, item)
 	}
 	next := ""
 	if len(workers) > limit {

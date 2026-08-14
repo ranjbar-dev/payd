@@ -20,7 +20,10 @@ import (
 	"payd/internal/store"
 )
 
-const balanceReconcileInterval = 6 * time.Hour
+const (
+	BalanceReconcileInterval = 6 * time.Hour
+	SafetyNetInterval        = 5 * time.Minute
+)
 
 type BalanceReader interface {
 	GetAccount(context.Context, string) (json.RawMessage, error)
@@ -85,8 +88,8 @@ func (r *Reconciler) EnableSafetyNet(reader SafetyReader, decoder SafetyDecoder,
 func (r *Reconciler) Run(ctx context.Context) {
 	r.safetyAndReport(ctx, false)
 	r.reconcileAndReport(ctx)
-	active := time.NewTicker(5 * time.Minute)
-	full := time.NewTicker(balanceReconcileInterval)
+	active := time.NewTicker(SafetyNetInterval)
+	full := time.NewTicker(BalanceReconcileInterval)
 	defer active.Stop()
 	defer full.Stop()
 	for {
@@ -121,7 +124,7 @@ func (r *Reconciler) reconcileAndReport(ctx context.Context) {
 // Reconcile completes every chain read before opening the write transaction (ARC-007, RL-003).
 func (r *Reconciler) Reconcile(ctx context.Context) error {
 	now := time.Now()
-	targets, err := r.store.BalanceTargets(ctx, now.Add(-balanceReconcileInterval))
+	targets, err := r.store.BalanceTargets(ctx, now.Add(-BalanceReconcileInterval))
 	if err != nil {
 		return err
 	}

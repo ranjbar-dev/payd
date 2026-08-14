@@ -35,6 +35,7 @@ type Server struct {
 	energy             config.Energy
 	resources          config.Resources
 	withdrawal         config.Withdrawal
+	wallet             config.Wallet
 	cooldown           time.Duration
 	delegator          resourceDelegator
 	burnCeilingHealthy func() bool
@@ -128,4 +129,5 @@ func (s *Server) UpdateConfig(cfg config.Config) {
 	}
 	s.price, s.tron, s.orders, s.ipn, s.energy = cfg.Price, cfg.Tron, cfg.Orders, cfg.IPN, cfg.Energy
 	s.resources, s.withdrawal, s.cooldown = cfg.Resources, cfg.Withdrawal, cfg.Wallet.Cooldown
+	s.wallet = cfg.Wallet
 }
