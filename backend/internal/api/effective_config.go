@@ -28,6 +28,7 @@ func (s *Server) effectiveConfig(w http.ResponseWriter, _ *http.Request) {
 	maxBurnTRX, balanceWarnTRX := s.energy.MaxBurnTRX, s.energy.BalanceWarnTRX
 	priceStaleAfter := s.price.StaleAfter
 	poolMinFree, poolMaxSize, cooldown := s.wallet.PoolMinFree, s.wallet.PoolMaxSize, s.cooldown
+	bandwidthTopupTRX, minEnergy, minBandwidth := s.resources.BandwidthTopupTRX, s.resources.MinEnergy, s.resources.MinBandwidth
 	s.mu.RUnlock()
 	sort.Slice(assets, func(i, j int) bool { return assets[i]["symbol"].(string) < assets[j]["symbol"].(string) })
 	sort.Strings(consumers)
@@ -42,6 +43,12 @@ func (s *Server) effectiveConfig(w http.ResponseWriter, _ *http.Request) {
 		"price": map[string]any{"stale_after_seconds": int64(priceStaleAfter.Seconds())},
 		"wallet": map[string]any{"pool_min_free": poolMinFree, "pool_max_size": poolMaxSize,
 			"cooldown_seconds": int64(cooldown.Seconds())},
+		// WRES-023: the reserve the resource wallet is expected to cover, plus the
+		// minimums a withdrawal is checked against. Without them a dashboard can show
+		// what a wallet holds but not whether that is enough, which is the only
+		// question being asked of this card.
+		"resources": map[string]any{"bandwidth_topup_trx": bandwidthTopupTRX,
+			"min_energy": minEnergy, "min_bandwidth": minBandwidth},
 		"consumers": consumers,
 	})
 }

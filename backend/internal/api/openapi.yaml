@@ -1437,7 +1437,18 @@ paths:
         Requires scope `wallets:read`. Uses opaque cursor pagination.
       x-required-scope: wallets:read
       x-requirements: [API-003, API-020, API-025, ENR-009]
-      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Cursor'}]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - name: status
+          in: query
+          schema: {type: string, enum: [quoted, purchased, delegated, expired, failed]}
+          description: >-
+            Restrict to one purchase status, applied in the query. A `purchased` row that
+            never reached `delegated` is money spent for nothing, and finding those means
+            filtering the history rather than the page a cursor happened to return.
+      x-error-codes:
+        400: [invalid_pagination, invalid_status]
       responses:
         '200': {description: Purchase page., content: {application/json: {schema: {$ref: '#/components/schemas/EnergyPurchasePage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -2693,9 +2704,26 @@ components:
     ChainParameters:
       type: object
       additionalProperties: false
-      required: [getEnergyFee, getTransactionFee, fetched_at, stale]
+      required: [getEnergyFee, getTransactionFee, fetched_at, stale, worst_case_burn_trx, max_burn_trx]
       properties:
         getEnergyFee: {type: integer, format: int64, description: Sun charged per energy unit.}
+        worst_case_burn_trx:
+          type: string
+          description: >-
+            What one transfer costs in TRX if every unit of `resources.min_energy` is
+            burned at the fee above. Computed here from the fee actually read, not by the
+            caller: it is money, and the caller would have to duplicate a rule the engine
+            owns.
+        max_burn_trx:
+          type: string
+          description: The configured ceiling this burn is judged against.
+        burn_exceeds_ceiling:
+          type: boolean
+          description: >-
+            True when the worst-case burn is above the configured ceiling — the ENR-017
+            condition where a ceiling set too low silently disables the fallback of last
+            resort. OMITTED when either figure is absent or unparsable, so an unknown
+            comparison renders as unknown rather than as "within limits".
         getTransactionFee: {type: integer, format: int64, description: Sun charged per bandwidth unit.}
         fetched_at: {type: integer, format: int64}
         stale: {type: boolean}
@@ -2724,10 +2752,20 @@ components:
     EnergyStatus:
       type: object
       additionalProperties: false
-      required: [provider, balance_trx, consecutive_failures, purchases]
+      required: [provider, balance_trx, consecutive_failures, purchases, balance_warn_trx, balance_low]
       properties:
         provider: {type: string}
         balance_trx: {type: string}
+        balance_warn_trx:
+          type: string
+          description: The configured threshold this balance is judged against.
+        balance_low:
+          type: boolean
+          description: >-
+            True when `balance_trx` is strictly below `balance_warn_trx`. Compared here
+            rather than by the caller because both are decimal money strings; a client
+            comparing them would be doing float arithmetic on a balance. An unparsable or
+            absent balance is never reported as low — unknown is not safe.
         last_checked_at: {type: [integer, 'null'], format: int64}
         last_error: {type: string}
         consecutive_failures: {type: integer, format: int64}

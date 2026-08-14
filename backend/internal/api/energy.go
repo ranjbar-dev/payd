@@ -1,6 +1,10 @@
 package api
 
-import "net/http"
+import (
+	"math/big"
+	"net/http"
+	"slices"
+)
 
 func (s *Server) energyStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
@@ -20,7 +24,30 @@ func (s *Server) energyStatus(w http.ResponseWriter, r *http.Request) {
 			status.BalanceTRX = balance
 		}
 	}
-	writeJSON(w, http.StatusOK, status)
+	s.mu.RLock()
+	warnTRX := s.energy.BalanceWarnTRX
+	s.mu.RUnlock()
+	// WRES-002: the comparison is made here because the figures are money. A client
+	// that compared them would be doing decimal arithmetic on a balance, which is
+	// exactly what the dashboard's INV-2 forbids — and a float comparison on a
+	// provider balance is how a low balance goes unnoticed.
+	body := map[string]any{"provider": status.Provider, "balance_trx": status.BalanceTRX,
+		"last_checked_at": status.LastCheckedAt, "last_error": status.LastError,
+		"consecutive_failures": status.ConsecutiveFailures, "purchases": status.Purchases,
+		"balance_warn_trx": warnTRX, "balance_low": balanceBelow(status.BalanceTRX, warnTRX)}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// balanceBelow reports whether balance is strictly below the warning threshold.
+// Both are decimal strings; an unparsable or absent figure is never reported as
+// low, because a missing balance is an unknown state rather than a safe one.
+func balanceBelow(balance, threshold string) bool {
+	have, ok := new(big.Rat).SetString(balance)
+	want, wantOK := new(big.Rat).SetString(threshold)
+	if !ok || !wantOK {
+		return false
+	}
+	return have.Cmp(want) < 0
 }
 
 func (s *Server) listEnergyPurchases(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +56,12 @@ func (s *Server) listEnergyPurchases(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_pagination", err.Error(), nil)
 		return
 	}
-	purchases, err := s.store.ListEnergyPurchases(r.Context(), cursor, limit+1)
+	status := r.URL.Query().Get("status")
+	if status != "" && !slices.Contains([]string{"quoted", "purchased", "delegated", "expired", "failed"}, status) {
+		writeError(w, http.StatusBadRequest, "invalid_status", "status must be quoted, purchased, delegated, expired or failed", nil)
+		return
+	}
+	purchases, err := s.store.ListEnergyPurchases(r.Context(), status, cursor, limit+1)
 	if err != nil {
 		s.logger.Error("list energy purchases", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)

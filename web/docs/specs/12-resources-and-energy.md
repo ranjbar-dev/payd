@@ -22,7 +22,7 @@ two tables: purchases and grants.
 | ID | Requirement |
 |---|---|
 | WRES-001 | The provider card MUST render `GET /energy/status`: `provider`, `balance_trx`, `last_checked_at`, `last_error`, `consecutive_failures`, and the purchase outcome counts |
-| WRES-002 | `balance_trx` MUST render against the configured `energy.balance_warn_trx` from `GET /config`, at warning severity when below. Backend `ENR-011` emits `energy.balance_low` at that threshold; the dashboard should show it before the alert fires |
+| WRES-002 | `balance_trx` MUST render against the configured `energy.balance_warn_trx`, both echoed from `GET /energy/status`, and the low-balance state MUST be taken from that response's `balance_low` flag. The UI MUST NOT compare the two itself: they are decimal money strings and `INV-2` forbids it. An absent or unparsable balance is reported as not-low by the backend and MUST render as unknown rather than as healthy |
 | WRES-003 | `consecutive_failures` MUST be shown, and at 5 or more the card MUST state that tier 1 is being skipped entirely for 10 minutes (backend `ENR-012`). Without this, the operator sees rising burn cost with no visible cause |
 | WRES-004 | `last_error` MUST render verbatim, with its age |
 | WRES-005 | `last_checked_at` MUST render relative. The balance is checked every 15 minutes (backend `ENR-010`); a much older figure means that worker is stalled |
@@ -35,9 +35,9 @@ two tables: purchases and grants.
 |---|---|
 | WRES-010 | The card MUST render `GET /chain/params`: `getEnergyFee`, `getTransactionFee`, and when they were read |
 | WRES-011 | `getEnergyFee` MUST be presented with its consequence, not as a bare number: the burn cost of a worst-case 131,000-energy transfer at the current price. At 100 sun that is ~13 TRX; at 210 sun ~27.5; at 420 sun ~55 (backend §12.2) |
-| WRES-012 | The card MUST compare the worst-case burn against the configured `energy.max_burn_trx` and render at critical severity when the ceiling would refuse it. Backend `ENR-017` calls a silently unreachable tier 3 an unacceptable steady state: it turns a provider outage from a cost problem into a total withdrawal outage |
+| WRES-012 | The card MUST show `worst_case_burn_trx` against `max_burn_trx`, both from `GET /chain/params`, and MUST take the verdict from that response's `burn_exceeds_ceiling`. The UI MUST NOT compute either figure or compare them. When `burn_exceeds_ceiling` is ABSENT the comparison is unknown and MUST render as unknown, never as within limits |
 | WRES-013 | The read age MUST be shown. Parameters are refreshed at startup and every 6 hours (backend `ENR-016`); a much older figure means worker W-011 is stalled |
-| WRES-014 | Never-populated parameters MUST render at critical severity with the consequence stated: the engine refuses to compute a burn estimate and holds withdrawals in `awaiting_resources` (backend `RES-022`) |
+| WRES-014 | Never-populated parameters MUST render at critical severity with the consequence stated: the service holds withdrawals rather than assuming a price (backend `RES-022`). This is the 503 `chain_params_unavailable` response, not a null field — the endpoint has no row to return |
 | WRES-015 | The comparison figures MUST come from the backend where available, and any figure the UI derives for illustration MUST be labelled as illustrative. The authoritative per-address numbers are `estimated_burn_trx` on `/wallets/needs-resources` |
 
 ## 12.4 Resource wallet
@@ -47,7 +47,7 @@ two tables: purchases and grants.
 | WRES-020 | The card MUST render `GET /resources/wallet`: address, confirmed TRX, available and limit energy, available and limit bandwidth, and the non-failed self-delegation count and staked amount per resource type |
 | WRES-021 | It MUST be labelled as the withdrawal path's dependency. Backend `API-042` exists because this wallet being empty blocks every tier-2 delegation and every bandwidth top-up |
 | WRES-022 | It MUST state that staking and unstaking are manual chain operations the service never performs (backend `RES-014`), and that unstaking takes 14 days |
-| WRES-023 | It MUST show whether the wallet's TRX covers `resources.bandwidth_topup_trx` for a meaningful number of top-ups, since a bandwidth strategy of `topup` fails silently once it cannot |
+| WRES-023 | It MUST show whether the wallet's TRX covers `resources.bandwidth_topup_trx` from `GET /config`, rendering both figures side by side. The comparison itself is not computed here; where the backend offers no verdict the UI states both values and leaves the judgement to the operator |
 | WRES-024 | The address MUST link to its (permanently `disabled`) entry on the addresses page (backend `POOL-008`) |
 
 ## 12.5 Purchases
@@ -59,7 +59,7 @@ two tables: purchases and grants.
 | WRES-032 | Statuses `quoted`, `purchased`, `delegated`, `expired`, `failed` MUST be styled per `UI-020`. A `purchased` row that never reached `delegated` is money spent for nothing |
 | WRES-033 | Each row MUST link to its withdrawal where `withdrawal_id` is set |
 | WRES-034 | `delegation_txid` MUST link to Tronscan |
-| WRES-035 | The table MUST be filterable by status and support cursor pagination per `API-025` |
+| WRES-035 | The table MUST be filterable by status and support cursor pagination per `API-025`. The status filter is a server-side query parameter on `GET /energy/purchases`; the UI MUST NOT filter the returned page (`DAT-020`) |
 | WRES-036 | Tier D (manual refresh). Purchase history is not a live surface |
 
 ## 12.6 Grants

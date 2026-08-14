@@ -195,6 +195,12 @@ export const chainParametersSchema = z.strictObject({
   getTransactionFee: z.number().int(),
   fetched_at: z.number().int(),
   stale: z.boolean(),
+  // WRES-012/WRES-015: computed by the backend from the fee it actually read, and
+  // judged against the configured ceiling there. `burn_exceeds_ceiling` is absent
+  // when either figure is unparsable — unknown must render as unknown.
+  worst_case_burn_trx: z.string(),
+  max_burn_trx: z.string(),
+  burn_exceeds_ceiling: z.boolean().optional(),
 });
 
 export const pricePageSchema = z.strictObject({
@@ -212,6 +218,10 @@ export const operationalStatsSchema = unknownRecordSchema;
 export const energyStatusSchema = z.strictObject({
   provider: z.string(),
   balance_trx: z.string(),
+  // WRES-002: the backend compares the balance against the configured threshold,
+  // because both are decimal money strings and INV-2 forbids the client doing it.
+  balance_warn_trx: z.string(),
+  balance_low: z.boolean(),
   last_checked_at: z.number().int().nullable().optional(),
   last_error: z.string().optional(),
   consecutive_failures: z.number().int(),
@@ -289,6 +299,9 @@ export const configResponseSchema = openObject({
   energy: z.strictObject({ enabled: z.boolean(), max_burn_trx: z.string(), balance_warn_trx: z.string() }),
   price: z.strictObject({ stale_after_seconds: z.number().int() }),
   wallet: z.strictObject({ pool_min_free: z.number().int(), pool_max_size: z.number().int(), cooldown_seconds: z.number().int() }),
+  // WRES-023: the reserve the resource wallet must cover, and the minimums a
+  // withdrawal is checked against.
+  resources: z.strictObject({ bandwidth_topup_trx: z.string(), min_energy: z.number().int(), min_bandwidth: z.number().int() }),
   consumers: z.array(z.string()),
 });
 export const volumeReportResponseSchema = openObject({

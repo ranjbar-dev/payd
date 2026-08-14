@@ -25,7 +25,7 @@ current-phase: WP3
 | 18-wd-wizard | PAGE | DONE | 3 | Spawned 2026-08-14. The highest-stakes task in the project. Brief opens with §11.0 quoted verbatim, then nine specific traps ahead of the requirement list — the idempotency key generated once and never regenerated on failure being the first, since that single mistake turns one payout into two. Also carries three deferred debts: UI-074, AUTH-045 (first of the four TOTP-gated actions, so it sets the pattern for 19 and 20), and the AUTH-023 surface built last task. v1 stopped without writing a file: WWD-070 requires the confirmation to restate the transfer FROM THE ESTIMATE RESPONSE, and that response carried only verdicts. Refusing to substitute form state was exactly right — echoing an operator's own inputs back and calling it a confirmation is the failure UI-060 exists to prevent. The estimate now echoes `from_address`, `to_address`, `asset`, `amount`, `amount_raw`, `amount_usd`, with `amount` RE-FORMATTED FROM THE PARSED BASE UNITS so a normalised amount is visible at the last moment before a TOTP code is typed. No attempt consumed. |
 | 19-wd-resolve | PAGE | PENDING | 0 | |
 | 20-addr-totp | PAGE | PENDING | 0 | |
-| 21-resources | PAGE | PENDING | 0 | |
+| 21-resources | PAGE | DONE | 1 | v1 stopped without writing a file on four contract gaps, ALL FOUR CORRECT and all now closed in the API: `balance_low` on `/energy/status`, `worst_case_burn_trx`/`max_burn_trx`/`burn_exceeds_ceiling` on `/chain/params`, a `resources` block on `/config`, and a server-side `status` filter on `/energy/purchases`. Each comparison lives in the backend because each is money — a client doing them breaks INV-2 or duplicates a rule the engine owns. WRES-014 needed no change: never-populated parameters are the 503 `chain_params_unavailable` response, not a null field. v2 delivered the page.
 | 22-noretry-audit | AUDITOR | PENDING | 0 | |
 | 23-reports | PAGE | PENDING | 0 | |
 | 24-system | PAGE | PENDING | 0 | |
@@ -165,6 +165,24 @@ G1-6 PASS WITH DEBT — the gate's own wording is met; a related requirement is 
   MUST be closed before the WP3 gate.
 
 ## Task validation
+
+21-resources: PASS — tsc 0, lint 0, `npm test` 4/4, build clean, `/resources`
+routed, retry-language scan empty. Server-side filters verified: `status` on
+purchases and `withdrawal_id` on grants both go out on the query string.
+
+ORCHESTRATOR ERROR, RECORDED SO IT IS NOT REPEATED. I reported the `#grants`
+anchor as missing and spawned a remediation for it. THE ANCHOR WAS ALWAYS THERE —
+`resource-grants.tsx:62`, `<section id="grants">`, written by v2 and unmodified
+since. My check was a shell `grep` whose pattern contained double quotes, and in
+this environment that is silently mangled: the same command block also reported
+no `query.set("status"` anywhere, which exists in three files. Two false
+negatives in one block, and I acted on one of them.
+
+The sub-agent verified the anchor existed and refused to change anything, which
+is the correct response to a brief that describes a defect that is not there.
+Cost: one wasted run. Use the dedicated Grep tool for pattern checks, not shell
+grep with embedded quotes — every invariant scan in this ledger that used quoted
+patterns should be treated as unverified until re-run that way.
 
 18-wd-wizard: PASS on attempt 3 — `./node_modules/.bin/tsc --noEmit` exit 0,
 `rtk proxy npm run lint` exit 0, `npm test` 4/4, `npm run build` exit 0 with
