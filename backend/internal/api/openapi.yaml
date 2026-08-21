@@ -253,12 +253,37 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [assets, withdrawal, tron, orders, energy, price, wallet, consumers]
+                required: [assets, withdrawal, tron, orders, energy, price, wallet, resources, consumers]
                 properties:
-                  assets: {type: array, items: {type: object, additionalProperties: true}}
-                  withdrawal: {type: object, additionalProperties: true}
-                  tron: {type: object, additionalProperties: true}
-                  orders: {type: object, additionalProperties: true}
+                  assets:
+                    type: array
+                    items:
+                      type: object
+                      required: [symbol, kind, contract, decimals, min_deposit, verified]
+                      properties:
+                        symbol: {type: string}
+                        kind: {type: string}
+                        contract: {type: string}
+                        decimals: {type: integer}
+                        min_deposit: {$ref: '#/components/schemas/Amount'}
+                        verified: {type: boolean}
+                  withdrawal:
+                    type: object
+                    required: [require_totp, daily_limit_usd]
+                    properties:
+                      require_totp: {type: boolean}
+                      daily_limit_usd: {type: string}
+                  tron:
+                    type: object
+                    required: [confirmations_required, reorg_depth]
+                    properties:
+                      confirmations_required: {type: integer}
+                      reorg_depth: {type: integer}
+                  orders:
+                    type: object
+                    required: [default_ttl_seconds]
+                    properties:
+                      default_ttl_seconds: {type: integer, format: int64}
                   energy:
                     type: object
                     required: [enabled, max_burn_trx, balance_warn_trx]
@@ -278,6 +303,14 @@ paths:
                       pool_min_free: {type: integer}
                       pool_max_size: {type: integer}
                       cooldown_seconds: {type: integer, format: int64}
+                  resources:
+                    type: object
+                    description: "WRES-023: the reserve the resource wallet is expected to cover, plus the minimums a withdrawal is checked against. Added after this schema was first written; document it precisely rather than let it drift undocumented again."
+                    required: [bandwidth_topup_trx, min_energy, min_bandwidth]
+                    properties:
+                      bandwidth_topup_trx: {type: string}
+                      min_energy: {type: integer, format: int64}
+                      min_bandwidth: {type: integer, format: int64}
                   consumers: {type: array, items: {type: string}}
 
   /api/v1/reports/volume:
