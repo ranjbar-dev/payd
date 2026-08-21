@@ -303,7 +303,18 @@ paths:
                   group_by: {type: string}
                   from: {type: integer, format: int64}
                   to: {type: integer, format: int64}
-                  buckets: {type: array, items: {type: object, additionalProperties: true}}
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      required: [key, order_count, paid_count, volume, usd_total, unpriced_paid_count]
+                      properties:
+                        key: {type: string, description: "UTC day (YYYY-MM-DD), asset symbol, or consumer, depending on group_by."}
+                        order_count: {type: integer, format: int64}
+                        paid_count: {type: integer, format: int64, description: "Orders with status paid or confirmed."}
+                        volume: {type: object, additionalProperties: {type: string}, description: "Actual received volume per asset, formatted decimal string, paid/confirmed orders only."}
+                        usd_total: {type: string, description: "Exact sum of per-order price snapshots taken at creation; excludes orders with no snapshot."}
+                        unpriced_paid_count: {type: integer, format: int64, description: "Paid/confirmed orders with no immutable price snapshot, excluded from usd_total. Display prominently (WRPT-003)."}
 
   /api/v1/reports/fees:
     get:

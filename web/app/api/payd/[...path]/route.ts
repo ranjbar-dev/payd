@@ -80,7 +80,11 @@ export async function proxyPaydRequest(request: Request, { params }: Context): P
   if (totp) headers.set("X-TOTP", totp);
 
   try {
-    const upstream = await paydFetch.request(url, { method, headers, ...(body === undefined ? {} : { body }) }, method === "POST" && path.length === 1 && path[0] === "withdrawals" ? 30_000 : 15_000);
+    // WRPT-033: a 100,000-row CSV export streams for longer than the ordinary request
+    // budget; AbortSignal.timeout aborts an in-progress stream, not just connection
+    // setup, so this route gets its own ceiling rather than truncating a large export.
+    const timeoutMs = path[0] === "export" ? 120_000 : method === "POST" && path.length === 1 && path[0] === "withdrawals" ? 30_000 : 15_000;
+    const upstream = await paydFetch.request(url, { method, headers, ...(body === undefined ? {} : { body }) }, timeoutMs);
     if (method === "GET" && path.length === 2 && path[0] === "auth" && path[1] === "whoami" && upstream.ok) {
       try {
         const identity: unknown = await upstream.clone().json();
