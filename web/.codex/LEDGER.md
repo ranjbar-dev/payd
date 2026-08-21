@@ -36,7 +36,7 @@ current-phase: WP4
 | WP2-GATE | GATE | DONE | 1 | All six PASS. G2-1 verified empirically against a database built from the real migrations, not by assertion. G2-5 initially FAILED on the IPN single-retry path and was remediated. |
 | WP3-GATE | GATE | DONE | 1 | 10 PASS. Full evidence in the gate log. |
 | WP4-GATE | GATE | DONE | 1 | 6 PASS. Full evidence in the gate log. |
-| FINAL | REPORT | PENDING | 0 | |
+| FINAL | REPORT | DONE | 1 | `web/.codex/FINAL-REPORT.md` written 2026-08-21. All four WPs and all four gates DONE/PASS. Zero requirement IDs found unmet; three non-violating items flagged for human review (funded-terminal-worklist.tsx's missing retry/staleness UI, scope-banner.tsx's hardcoded colors, POST /withdrawals's conditional server-side TOTP enforcement). |
 
 ## Gate log
 
