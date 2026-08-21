@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 
 import { useTronscanBaseUrl } from "@/app/providers";
 import { Amount } from "@/components/data/amount";
@@ -71,6 +71,14 @@ function PaymentRow({ payment, minDeposit }: Readonly<{ payment: Payment; minDep
   return <><td className="px-3 py-2"><TxidLink txid={payment.txid} tronscanBaseUrl={tronscanBaseUrl} /></td><td className="px-3 py-2"><Direction payment={payment} /></td><td className="px-3 py-2 font-mono">{payment.asset}</td><td className="px-3 py-2"><Amount value={payment.amount} asset={payment.asset} /></td><td className="px-3 py-2">{address(payment.from_address)}</td><td className="px-3 py-2">{address(payment.to_address)}</td><td className="px-3 py-2"><StatusBadge status={payment.status} /></td><td className="px-3 py-2">{payment.order_id ? <Link href={`/orders/${encodeURIComponent(payment.order_id)}`} className="text-severity-progress underline underline-offset-2" onClick={(event) => event.stopPropagation()}><EntityId value={payment.order_id} /></Link> : "—"}</td><td className="px-3 py-2 font-mono">{payment.block_height}</td><td className="px-3 py-2"><Timestamp seconds={payment.block_timestamp} /><div className="mt-1 text-xs text-ink-secondary">Observed <Timestamp seconds={payment.detected_at} /></div></td><td className="px-3 py-2"><DustFlag payment={payment} minDeposit={minDeposit} /></td></>;
 }
 
+function PaymentCards({ rows, minDeposit, onSelect }: Readonly<{ rows: Payment[]; minDeposit: (payment: Payment) => string | undefined; onSelect: (payment: Payment) => void }>) {
+  const tronscanBaseUrl = useTronscanBaseUrl();
+  const activate = (payment: Payment, event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(payment); }
+  };
+  return <div className="grid gap-2 lg:hidden">{rows.map((payment) => <article key={`${payment.txid}:${payment.log_index}`} className="cursor-pointer border border-border-subtle bg-panel p-3 hover:bg-raised" role="link" tabIndex={0} onClick={() => onSelect(payment)} onKeyDown={(event) => activate(payment, event)}><div className="flex items-start justify-between gap-2"><span onClick={(event) => event.stopPropagation()}><TxidLink txid={payment.txid} tronscanBaseUrl={tronscanBaseUrl} /></span><StatusBadge status={payment.status} /></div><p className="mt-2"><Direction payment={payment} /></p><p className="mt-2 font-mono text-xs">{payment.asset}</p><p className="mt-1"><Amount value={payment.amount} asset={payment.asset} /></p><p className="mt-2">From {address(payment.from_address)}<br />To {address(payment.to_address)}</p><p className="mt-2">{payment.order_id ? <Link href={`/orders/${encodeURIComponent(payment.order_id)}`} className="text-severity-progress underline underline-offset-2" onClick={(event) => event.stopPropagation()}><EntityId value={payment.order_id} /></Link> : <span className="text-ink-faint">No order</span>}</p><p className="mt-2 font-mono text-xs text-ink-secondary">Block {payment.block_height}</p><p className="mt-1 text-xs text-ink-secondary"><Timestamp seconds={payment.block_timestamp} /> · Observed <Timestamp seconds={payment.detected_at} /></p><p className="mt-2"><DustFlag payment={payment} minDeposit={minDeposit(payment)} /></p></article>)}</div>;
+}
+
 function ErrorNotice({ error, updatedAt, retry }: Readonly<{ error: unknown; updatedAt: number; retry: () => void }>) {
   if (!error) return null;
   const paydError = isPaydError(error) ? error : null;
@@ -121,7 +129,8 @@ export function PaymentsDashboard() {
       <label className="grid gap-1 text-xs text-ink-secondary">Block date to (local)<input type="date" value={localDateValue(filters.to)} onChange={(event) => setParams({ to: localDateSeconds(event.currentTarget.value, true) })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
     </TableFilters>
     {resolvedRange}
-    <DataTable columns={[{ id: "txid", label: "Transaction" }, { id: "direction", label: "Direction" }, { id: "asset", label: "Asset" }, { id: "amount", label: "Amount" }, { id: "from", label: "From" }, { id: "to", label: "To" }, { id: "status", label: "Status" }, { id: "order", label: "Order" }, { id: "height", label: "Block height" }, { id: "timestamp", label: "Block timestamp / observed" }, { id: "dust", label: "Dust" }]} rows={rows} rowKey={(payment) => `${payment.txid}:${payment.log_index}`} renderRow={(payment) => <PaymentRow payment={payment} minDeposit={minDeposit(payment)} />} onRowClick={setSelected} defaultSort="Backend payment cursor order" caption="Payments" loading={payments.isLoading} emptyState={<EmptyState kind="search" title="No payments match these filters" description="Payments appear after payd detects transfers to or from pooled addresses." />} />
+    <div className="hidden lg:block"><DataTable columns={[{ id: "txid", label: "Transaction" }, { id: "direction", label: "Direction" }, { id: "asset", label: "Asset" }, { id: "amount", label: "Amount" }, { id: "from", label: "From" }, { id: "to", label: "To" }, { id: "status", label: "Status" }, { id: "order", label: "Order" }, { id: "height", label: "Block height" }, { id: "timestamp", label: "Block timestamp / observed" }, { id: "dust", label: "Dust" }]} rows={rows} rowKey={(payment) => `${payment.txid}:${payment.log_index}`} renderRow={(payment) => <PaymentRow payment={payment} minDeposit={minDeposit(payment)} />} onRowClick={setSelected} defaultSort="Backend payment cursor order" caption="Payments" loading={payments.isLoading} emptyState={<EmptyState kind="search" title="No payments match these filters" description="Payments appear after payd detects transfers to or from pooled addresses." />} /></div>
+    {!payments.isLoading && rows.length ? <PaymentCards rows={rows} minDeposit={minDeposit} onSelect={setSelected} /> : null}
     <ErrorNotice error={payments.isError ? payments.error : null} updatedAt={payments.dataUpdatedAt} retry={() => void payments.refetch()} />
     <CursorPager nextCursor={payments.data?.next_cursor} hasResults={rows.length > 0} limit={limit} onNext={(next) => setParams({ cursor: next })} onStart={() => setParams({ cursor: "" })} onLimitChange={(next) => setParams({ limit: String(next) })} />
     {selected ? <PaymentDrawer payment={selected} minDeposit={minDeposit(selected)} onClose={() => setSelected(null)} /> : null}
