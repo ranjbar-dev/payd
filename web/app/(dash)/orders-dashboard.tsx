@@ -19,6 +19,7 @@ import type { Order, OrderDetailResponse, OrderEventsResponse, OrderList, Paymen
 import { useTronscanBaseUrl } from "@/app/providers";
 import { paydQueryOptions } from "@/lib/query";
 import { queryKeys } from "@/lib/query-keys";
+import { ExportDialog } from "./export-dialog";
 import { OrderActions } from "./order-actions";
 
 const LIST_INTERVAL = 30_000;
@@ -111,7 +112,7 @@ function OrdersList() {
   const active = Object.values(filters).some(Boolean);
   const rows = orders.data?.orders ?? [];
 
-  return <main className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6"><header><p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-faint">Operations / Orders</p><div className="mt-1 flex flex-wrap items-center gap-3"><h1 className="text-2xl font-semibold">Orders</h1><Link href="/orders/new" className="border border-severity-progress px-2 py-1 text-sm">Create order</Link><Link href="/orders/funded-terminal" className="border border-severity-warning px-2 py-1 text-sm">Funded terminal</Link></div><p className="mt-1 text-sm text-ink-secondary">Newest first, as returned by payd.</p></header>
+  return <main className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6"><header><p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-faint">Operations / Orders</p><div className="mt-1 flex flex-wrap items-center gap-3"><h1 className="text-2xl font-semibold">Orders</h1><Link href="/orders/new" className="border border-severity-progress px-2 py-1 text-sm">Create order</Link><Link href="/orders/funded-terminal" className="border border-severity-warning px-2 py-1 text-sm">Funded terminal</Link>{/* WRPT-030/WRPT-036: the CURRENT list filters, straight through, not a separate export filter state. */}<ExportDialog kind="orders" filters={filters} /></div><p className="mt-1 text-sm text-ink-secondary">Newest first, as returned by payd.</p></header>
     <TableFilters active={active} onClear={() => setParams({ status: "", asset: "", external_ref: "", consumer: "", address: "", created_from: "", created_to: "" })}>
       <label className="grid gap-1 text-xs text-ink-secondary">Status<input value={filters.status} onChange={(event) => setParams({ status: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
       <label className="grid gap-1 text-xs text-ink-secondary">Asset<input value={filters.asset} onChange={(event) => setParams({ asset: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>

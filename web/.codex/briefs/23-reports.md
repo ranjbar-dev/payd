@@ -2,7 +2,7 @@ ROLE: PAGE
 TASK-ID: 23-reports
 GOAL: Build the /reports page (volume report, fee report, CSV export dialogs) and wire export entry points into /orders and /withdrawals.
 
-You are working in the repository at C:\Users\root\Desktop\tron-payment-proccesor.
+You are working in the repository at C:\Users\root\Desktop\Projects\github\tron-payment-proccesor, on branch web-autopilot.
 
 READ FIRST, FULLY:
   web/docs/specs/14-reports-and-exports.md — the whole file, it is short

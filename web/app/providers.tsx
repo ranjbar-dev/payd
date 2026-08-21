@@ -12,6 +12,13 @@ import { createPaydQueryClient, getRateLimitUntil, subscribeRateLimit } from "@/
 // quietly fall back to a hardcoded mainnet link (UI-033).
 const TronscanContext = createContext<string | null>(null);
 const SessionExpiryContext = createContext<SessionExpiry | null>(null);
+// AUTH-032: which control needs disabling and why is server-side knowledge (the
+// scopes cached from `GET /auth/whoami`, `lib/session.ts`'s `getSessionWhoami`).
+// Same pattern as TronscanContext: a plain context fed once from a server component
+// (`app/(dash)/layout.tsx`), never fetched by the client and never a `NEXT_PUBLIC_`
+// variable. `null` distinguishes "no provider mounted" (a bug) from "zero scopes"
+// (a real, valid key state), so `useScopes` only throws on the former.
+const ScopesContext = createContext<string[] | null>(null);
 
 export type SessionExpiry = Readonly<{
   expiresAt: number;
@@ -30,6 +37,19 @@ export function useSessionExpiry(): SessionExpiry {
   const value = useContext(SessionExpiryContext);
   if (!value) throw new Error("useSessionExpiry requires SessionExpiryProvider");
   return value;
+}
+
+export function useScopes(): string[] {
+  const value = useContext(ScopesContext);
+  if (!value) throw new Error("useScopes requires ScopesProvider");
+  return value;
+}
+
+// Mounted from `app/(dash)/layout.tsx`, the same place that already calls
+// `getSessionWhoami(session.id)` once to build `ScopeBanner` — this is additive to
+// that call, not a second fetch and not a restructuring of the banner.
+export function ScopesProvider({ children, scopes }: Readonly<{ children: React.ReactNode; scopes: string[] }>) {
+  return <ScopesContext.Provider value={scopes}>{children}</ScopesContext.Provider>;
 }
 
 export function SessionExpiryProvider({ children, expiresAt }: Readonly<{ children: React.ReactNode; expiresAt: number }>) {

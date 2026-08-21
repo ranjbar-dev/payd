@@ -304,8 +304,22 @@ export const configResponseSchema = openObject({
   resources: z.strictObject({ bandwidth_topup_trx: z.string(), min_energy: z.number().int(), min_bandwidth: z.number().int() }),
   consumers: z.array(z.string()),
 });
+// backend/internal/api/reports.go's volumeReport handler emits exactly these six keys
+// per bucket (openapi.yaml /reports/volume 200 schema, tightened 2026-08-21 to match).
+// `volume` is a map of asset symbol to an already-formatted decimal string (paid/
+// confirmed orders only); `usd_total` is an exact string sum of immutable per-order
+// price snapshots and excludes any order counted in `unpriced_paid_count` (WRPT-002,
+// WRPT-003, WRPT-004).
+export const volumeReportBucketSchema = z.strictObject({
+  key: z.string(),
+  order_count: z.number().int(),
+  paid_count: z.number().int(),
+  volume: z.record(z.string(), z.string()),
+  usd_total: z.string(),
+  unpriced_paid_count: z.number().int(),
+});
 export const volumeReportResponseSchema = openObject({
-  group_by: z.string(), from: z.number().int(), to: z.number().int(), buckets: z.array(unknownRecordSchema),
+  group_by: z.string(), from: z.number().int(), to: z.number().int(), buckets: z.array(volumeReportBucketSchema),
 });
 export const feesReportResponseSchema = openObject({
   from: z.number().int(),

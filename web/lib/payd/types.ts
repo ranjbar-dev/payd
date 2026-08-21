@@ -37,6 +37,7 @@ import type {
   resourceGrantsResponseSchema,
   resourceStateSchema,
   resourceWalletResponseSchema,
+  volumeReportBucketSchema,
   volumeReportResponseSchema,
   walletDetailSchema,
   walletDisableResponseSchema,
@@ -86,6 +87,7 @@ export type ResourceGrantsResponse = z.infer<typeof resourceGrantsResponseSchema
 export type ResourceWalletResponse = z.infer<typeof resourceWalletResponseSchema>;
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 export type VolumeReportResponse = z.infer<typeof volumeReportResponseSchema>;
+export type VolumeReportBucket = z.infer<typeof volumeReportBucketSchema>;
 export type FeesReportResponse = z.infer<typeof feesReportResponseSchema>;
 export type OrderEventsResponse = z.infer<typeof orderEventsResponseSchema>;
 export type WithdrawalEstimateResponse = z.infer<typeof withdrawalEstimateResponseSchema>;
