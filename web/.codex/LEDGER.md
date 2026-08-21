@@ -35,10 +35,65 @@ current-phase: WP4
 | WP1-GATE | GATE | DONE | 1 | 5 PASS, 1 PASS WITH DEBT (AUTH-023). Full evidence in the gate log. |
 | WP2-GATE | GATE | DONE | 1 | All six PASS. G2-1 verified empirically against a database built from the real migrations, not by assertion. G2-5 initially FAILED on the IPN single-retry path and was remediated. |
 | WP3-GATE | GATE | DONE | 1 | 10 PASS. Full evidence in the gate log. |
-| WP4-GATE | GATE | PENDING | 0 | |
+| WP4-GATE | GATE | DONE | 1 | 6 PASS. Full evidence in the gate log. |
 | FINAL | REPORT | PENDING | 0 | |
 
 ## Gate log
+
+WP4 GATE — 2026-08-21. All six PASS.
+
+G4-1 PASS — `reports-dashboard.tsx:84-85`, `unpriced_paid_count` renders as its own
+first-class `<td>` column in the volume table (labelled "Unpriced paid"), not a
+tooltip or footnote, plus explanatory prose at `:111-112` naming what it means.
+
+G4-2 PASS — `withdrawals-dashboard.tsx`, `Meter` component: "UTC — resets at 00:00
+UTC" under "Daily withdrawal allowance" (line 55, exact text confirmed by direct
+read). `reports-dashboard.tsx:26,79`, volume day-bucket column reads "Day (UTC)" and
+each row appends "(UTC day)". `system-quota.tsx:53,81,89`, "Requests today (UTC)",
+"Seven-day history (UTC)", and the history table's day column all labelled UTC in
+visible text, not a tooltip.
+
+G4-3 PASS — `export-dialog.tsx:69`, the download is a plain `<a href download>`
+navigation, not a fetch-then-save — the browser streams and saves the response
+itself. `app/api/payd/[...path]/route.ts:96`, `responseFrom()` passes `upstream.body`
+straight into the `Response` constructor (no buffering) and forwards
+`content-disposition` from upstream unchanged (`:21-23`). Confirmed the export
+timeout carve-out survived: `route.ts`'s `timeoutMs` gives `/export/*` GETs 120s
+instead of the default 15s (orchestrator fix, commit `acc9fa1`), so a large export
+isn't aborted mid-stream by `AbortSignal.timeout`.
+
+G4-4 PASS — `useScopes()` (from `23-reports`, `app/providers.tsx`) gates
+`export-dialog.tsx`'s export buttons (disabled, scope named in `title` and visible
+text) and `system-config.tsx`/`system-audit.tsx`'s Config/Audit tabs (`ScopeDisabled`
+component, scope named) — neither renders as hidden, both render as a disabled
+control naming the missing scope, verified by reading each file directly during
+`23-reports`'s and `24-system`'s independent re-validation above.
+
+G4-5 PASS — `26-coverage` (commit `c92ee7e`) audited all 52 routes against
+`routes.go` and actual `web/` call sites: zero unconsumed, zero backend gaps, ten
+matrix rows corrected (nine missed consumers, one real misattribution —
+`WOVW-052`/"Overview volume card" was wrongly on `/stats` instead of
+`/reports/volume`, independently confirmed by the orchestrator reading
+`overview-dashboard.tsx:113,121,171` before this gate was recorded). The matrix's
+"Routes deliberately not consumed" and "needs and backend does not have" sections
+were both re-verified as accurate, not left as a stale default.
+
+G4-6 PASS — `system-session.tsx:172-190`, "Deployment identity" card shows `payd
+host` (server-extracted hostname only, never the full `PAYD_BASE_URL`, per
+`system/page.tsx:17`) and `Tronscan network` (derived from the Tronscan origin's
+host via `tronNetwork()`, `:38-44` — "Mainnet" / "Nile testnet" / "Shasta testnet" /
+raw host for anything unrecognised), with explicit prose: "A dashboard that looks
+identical on mainnet and Nile is how a real payout gets made while believing it is a
+test."
+
+Independent validation run for this gate, not taken from any task's own report:
+`./node_modules/.bin/tsc --noEmit` exit 0; `npm test` 4/4; `npm run build` exit 0
+with all 23 routes present (`/reports`, `/reports/fees`, `/system` and
+`/system/components` distinct, `/withdrawals/needs-operator` unchanged);
+`git status --porcelain backend/` empty; built-bundle secret scan (`PAYD_API_KEY`,
+`X-API-Key`, `SESSION_SECRET`, `DASH_TOTP`, plus the throwaway build values
+themselves) empty except the one already-investigated false positive (the literal
+string `DASH_TOTP_SECRET` as explanatory Session-tab copy, not a value).
 
 WP3 GATE — 2026-08-21. All ten PASS. Ledger rows for 19, 20, 21, 22 were stale
 (work committed, never marked DONE) before this gate; reconciled against the
