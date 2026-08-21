@@ -26,6 +26,9 @@ export const queryKeys = {
     purchases: (value?: QueryFilters) => ["energy", "purchases", filters(value)] as const,
     status: () => ["energy", "status"] as const,
   },
+  // WSYS-060: liveness probe, kept distinct from `readiness` (/readyz) below —
+  // the two endpoints answer different questions and are polled independently.
+  health: () => ["healthz"] as const,
   ipn: {
     consumers: (value?: QueryFilters) => ["ipn", "consumers", filters(value)] as const,
     dead: (value?: QueryFilters) => ["ipn", "dead", filters(value)] as const,

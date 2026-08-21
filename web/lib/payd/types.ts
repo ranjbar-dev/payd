@@ -5,11 +5,13 @@ import type {
   amountSchema,
   apiErrorSchema,
   assetsResponseSchema,
+  auditEntrySchema,
   auditResponseSchema,
   chainParametersSchema,
   chainQuotaResponseSchema,
   chainStatusResponseSchema,
   clearDriftResponseSchema,
+  configAssetSchema,
   configResponseSchema,
   deadIpnPageSchema,
   energyPurchasePageSchema,
@@ -32,6 +34,7 @@ import type {
   paymentListSchema,
   paymentSchema,
   pricePageSchema,
+  quotaHistoryEntrySchema,
   readinessSchema,
   resourceGrantSchema,
   resourceGrantsResponseSchema,
@@ -81,11 +84,20 @@ export type Health = z.infer<typeof healthSchema>;
 export type Readiness = z.infer<typeof readinessSchema>;
 export type ChainStatusResponse = z.infer<typeof chainStatusResponseSchema>;
 export type ChainQuotaResponse = z.infer<typeof chainQuotaResponseSchema>;
+// WSYS-012: one row of ChainQuotaResponse["history"], named for the quota tab's
+// trend-indicator table (see quotaHistoryEntrySchema in schemas.ts).
+export type QuotaHistoryEntry = z.infer<typeof quotaHistoryEntrySchema>;
 export type WorkersResponse = z.infer<typeof workersResponseSchema>;
 export type AuditResponse = z.infer<typeof auditResponseSchema>;
+// WSYS-040/WSYS-043: one row of AuditResponse["entries"], named for the audit tab
+// (see auditEntrySchema in schemas.ts).
+export type AuditEntry = z.infer<typeof auditEntrySchema>;
 export type ResourceGrantsResponse = z.infer<typeof resourceGrantsResponseSchema>;
 export type ResourceWalletResponse = z.infer<typeof resourceWalletResponseSchema>;
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
+// WSYS-020/WSYS-030: one entry of ConfigResponse["assets"] — same shape as an
+// AssetsResponse["assets"] entry today, but typed from its own OpenAPI schema.
+export type ConfigAsset = z.infer<typeof configAssetSchema>;
 export type VolumeReportResponse = z.infer<typeof volumeReportResponseSchema>;
 export type VolumeReportBucket = z.infer<typeof volumeReportBucketSchema>;
 export type FeesReportResponse = z.infer<typeof feesReportResponseSchema>;

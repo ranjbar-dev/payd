@@ -259,11 +259,15 @@ export const chainStatusResponseSchema = openObject({
   reorg_suspected: z.boolean(),
   last_block_timestamp: z.number().int(),
 });
+// WSYS-010/WSYS-012: the seven-day history entry, named and exported separately so
+// the System page's quota-history table (its trend indicator compares adjacent
+// entries) can type a single row without reaching into the parent response shape.
+export const quotaHistoryEntrySchema = openObject({ day_start: z.number().int(), requests: z.number().int() });
 export const chainQuotaResponseSchema = openObject({
   requests_today: z.number().int(),
   daily_request_quota: z.number().int(),
   percent_used: z.number(),
-  history: z.array(openObject({ day_start: z.number().int(), requests: z.number().int() })),
+  history: z.array(quotaHistoryEntrySchema),
 });
 export const workersResponseSchema = openObject({
   workers: z.array(openObject({
@@ -277,10 +281,15 @@ export const workersResponseSchema = openObject({
   })),
   next_cursor: z.string(),
 });
+// WSYS-040: one audit row, named and exported separately (same reasoning as
+// quotaHistoryEntrySchema above) so the System page's audit table can type a row
+// (e.g. to link a withdrawal.* / order.* action's subject to its entity) without
+// indexing into AuditResponse["entries"][number].
+export const auditEntrySchema = openObject({
+  id: z.number().int(), actor: z.string(), action: z.string(), subject: z.string(), detail: z.string(), ip: z.string(), created_at: z.number().int(),
+});
 export const auditResponseSchema = openObject({
-  entries: z.array(openObject({
-    id: z.number().int(), actor: z.string(), action: z.string(), subject: z.string(), detail: z.string(), ip: z.string(), created_at: z.number().int(),
-  })),
+  entries: z.array(auditEntrySchema),
   next_cursor: z.string(),
 });
 export const resourceGrantsResponseSchema = openObject({ grants: z.array(unknownRecordSchema), next_cursor: z.string() });
@@ -291,11 +300,29 @@ export const resourceWalletResponseSchema = openObject({
   bandwidth: unknownRecordSchema,
   outstanding_delegations: unknownRecordSchema,
 });
+// WSYS-020/API-043: one entry of `/config`'s `assets` array. Deliberately not the
+// same const as assetsResponseSchema's inline item — the two endpoints happen to
+// share a shape today, but they are independent OpenAPI schemas and a change to
+// one must not silently retype the other.
+export const configAssetSchema = z.strictObject({
+  symbol: z.string(),
+  kind: z.string(),
+  contract: z.string(),
+  decimals: z.number().int(),
+  min_deposit: amountSchema,
+  verified: z.boolean(),
+});
 export const configResponseSchema = openObject({
-  assets: z.array(unknownRecordSchema),
-  withdrawal: unknownRecordSchema,
-  tron: unknownRecordSchema,
-  orders: unknownRecordSchema,
+  // WSYS-020/WSYS-022: openapi.yaml (tightened 2026-08-21) now types every one of
+  // these sub-objects precisely with a `required` list and no additionalProperties
+  // gap, so `assets`/`withdrawal`/`tron`/`orders` are strict like `energy`/`price`/
+  // `wallet`/`resources` below, rather than the free-form records they were before
+  // that tightening — INV-4/WSYS-022 depend on every field here being enumerable,
+  // not an open bag that could grow a credential undetected.
+  assets: z.array(configAssetSchema),
+  withdrawal: z.strictObject({ require_totp: z.boolean(), daily_limit_usd: z.string() }),
+  tron: z.strictObject({ confirmations_required: z.number().int(), reorg_depth: z.number().int() }),
+  orders: z.strictObject({ default_ttl_seconds: z.number().int() }),
   energy: z.strictObject({ enabled: z.boolean(), max_burn_trx: z.string(), balance_warn_trx: z.string() }),
   price: z.strictObject({ stale_after_seconds: z.number().int() }),
   wallet: z.strictObject({ pool_min_free: z.number().int(), pool_max_size: z.number().int(), cooldown_seconds: z.number().int() }),
