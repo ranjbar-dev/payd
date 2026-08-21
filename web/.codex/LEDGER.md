@@ -1,6 +1,6 @@
 # Autopilot ledger
 
-spawn-invocation: codex exec --dangerously-bypass-approvals-and-sandbox - < FILE > LOG 2>&1
+spawn-invocation: Agent tool, subagent_type=general-purpose (SCAFFOLD/PLATFORM/DESIGN/PAGE) or Explore (AUDITOR), run_in_background=false, prompt=brief file content. Switched from codex exec 2026-08-21 after H8 (see Gate log / Blocked-halted history below); AUTOPILOT.md §2 updated to match.
 current-phase: WP4
 
 | task-id | role | status | attempts | notes |
@@ -27,7 +27,7 @@ current-phase: WP4
 | 20-addr-totp | PAGE | DONE | 1 | Ledger row was never updated when this landed (commit `a2edf98`); reconciled 2026-08-21 against the actual diff, not re-spawned. Delegate and clear-drift, both TOTP-gated. Verified during the `22-noretry-audit` reconciliation: both classify any non-503 5xx (and network failure) as ambiguous, neither offers a second attempt, and the confirming component unmounts on ambiguous outcome rather than staying interactive. |
 | 21-resources | PAGE | DONE | 1 | v1 stopped without writing a file on four contract gaps, ALL FOUR CORRECT and all now closed in the API: `balance_low` on `/energy/status`, `worst_case_burn_trx`/`max_burn_trx`/`burn_exceeds_ceiling` on `/chain/params`, a `resources` block on `/config`, and a server-side `status` filter on `/energy/purchases`. Each comparison lives in the backend because each is money — a client doing them breaks INV-2 or duplicates a rule the engine owns. WRES-014 needed no change: never-populated parameters are the 503 `chain_params_unavailable` response, not a null field. v2 delivered the page. |
 | 22-noretry-audit | AUDITOR | DONE | 1 | Brief existed (commit `d8a078d`) but was never actually run — no log, no findings. Run 2026-08-21 directly against the WP3 surface rather than via a spawned sub-agent. See Task validation below for the full report. Two real findings, both fixed as integration breakage (auditor brief forbids the auditor from editing code, but this was the orchestrator closing what the audit found, same as every other H4/contract-repair cycle in this ledger — not a second AUDITOR pass). No CRITICAL or double-payout-capable defect found. |
-| 23-reports | PAGE | HALTED | 1 | Spawned 2026-08-21. Brief at `web/.codex/briefs/23-reports.md`, still valid for the next attempt. H8: `codex exec` failed immediately with `token_revoked` / `refresh_token_invalidated` — no model connection was ever established, no code was written. See `web/.codex/HALT.md`. Orchestrator's pre-spawn contract repairs (tightened `/reports/volume` schema in `openapi.yaml`, widened proxy GET timeout to 120s for `/export/*`) are already committed-worthy and independent of this halt — they stand regardless of which task resumes next. |
+| 23-reports | PAGE | PENDING | 0 | H8 cleared: spawn mechanism switched from `codex exec` to the Claude Code Agent tool (AUTOPILOT.md §2, commit `0640724`). The 1 prior attempt was against `codex exec` failing to connect at all — no sub-agent ever ran, so it does not count against this task's budget. Brief at `web/.codex/briefs/23-reports.md` is unchanged and still valid. Ready to spawn via `general-purpose`. |
 | 24-system | PAGE | PENDING | 0 | |
 | 25-polish | PAGE | PENDING | 0 | |
 | 26-coverage | AUDITOR | PENDING | 0 | |
@@ -591,8 +591,18 @@ appearing anywhere in the repository.
 02-types: PASS — `rtk proxy npx tsc --noEmit`, `rtk proxy npm run lint`, and `npm run build` (with temporary process-only server values) exited 0. `git status --porcelain backend/` was empty. Retry-control was globally `retry: false`; no withdrawal-control-language, money-coercion, or built-bundle-secret scan had a code hit.
 
 ## Blocked / halted
-H8 — 2026-08-21. `codex exec` cannot be invoked; see `web/.codex/HALT.md`. WP4 is
-otherwise unblocked: WP3-GATE passed, brief for `23-reports` is written and valid.
+Nothing currently blocking.
+
+H8 (`codex exec` unusable) — CLEARED 2026-08-21. `codex exec` failed immediately on
+every call with `token_revoked` / `refresh_token_invalidated` (OAuth session
+revoked; re-authenticating it is an interactive step outside the orchestrator's
+reach — see the now-superseded `web/.codex/HALT.md` for the original evidence).
+Resolved by switching the spawn mechanism entirely: AUTOPILOT.md §2 now spawns
+sub-agents through Claude Code's own Agent tool (`general-purpose` for
+SCAFFOLD/PLATFORM/DESIGN/PAGE, `Explore` for AUDITOR) instead of shelling out to a
+separate CLI, committed in `0640724`. No task graph, brief, invariant, or gate
+changed. `23-reports`'s one recorded attempt was against the old, broken spawn
+path and produced no code, so it does not count against the task's budget.
 
 Prior history (all cleared, kept for reference):
 
