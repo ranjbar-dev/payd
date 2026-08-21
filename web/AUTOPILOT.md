@@ -1,21 +1,19 @@
 # Autopilot — autonomous build of the payd dashboard
 
-One prompt. Paste it once into Codex CLI at the repo root. It runs all four
-phases end to end: decomposes each phase into tasks, spawns a sub-agent per
-task with the brief injected automatically, validates every result, remediates
-failures, verifies gates, and moves on. It stops only when the project is done
-or a halt condition fires.
+One prompt, run inside Claude Code at the repo root. The orchestrator is the
+Claude Code session itself; it runs all four phases end to end: decomposes
+each phase into tasks, spawns a sub-agent per task via the Agent tool with the
+brief injected as the prompt, validates every result, remediates failures,
+verifies gates, and moves on. It stops only when the project is done or a
+halt condition fires.
 
 Manual, human-gated alternative: `web/Roadmap.md`.
 
 ## Before you paste
 
 1. `cd C:\Users\root\Desktop\tron-payment-proccesor`
-2. `codex exec --help` — confirm the flags in §2 of the prompt match your
-   version. If `--full-auto` is named differently, tell the orchestrator the
-   correct invocation in one line appended to the prompt.
-3. Commit or stash anything you care about. The run writes a lot.
-4. `git checkout -b web-autopilot` — it works on a branch.
+2. Commit or stash anything you care about. The run writes a lot.
+3. `git checkout -b web-autopilot` — it works on a branch.
 
 ## The prompt
 
@@ -57,28 +55,36 @@ validation you perform.
 §2  HOW YOU SPAWN A SUB-AGENT
 ═══════════════════════════════════════════════════════════════════════
 
-A sub-agent is a separate non-interactive Codex process. You spawn one by
-writing its brief to a file and executing it:
+A sub-agent is a Claude Code Agent-tool call, not a separate CLI process. You
+spawn one by writing its brief and invoking the Agent tool with that brief as
+the prompt:
 
   1. Write the brief:      web/.codex/briefs/<task-id>.md
-  2. Spawn:                codex exec --full-auto "$(cat web/.codex/briefs/<task-id>.md)" > web/.codex/logs/<task-id>.log 2>&1
-  3. Read ONLY THE TAIL of the log — `tail -c 20000` — and then the resulting
-     git diff. Never trust the log alone: a sub-agent claiming success is a
-     claim, not evidence.
+  2. Spawn — call the Agent tool with:
+       - `prompt`: the full brief text (read the file back and pass its
+         content verbatim; do not summarize or paraphrase it)
+       - `subagent_type`: `general-purpose` for SCAFFOLD, PLATFORM, DESIGN,
+         and PAGE roles (needs Read/Write/Edit/Bash/Grep/Glob to build code);
+         `Explore` for AUDITOR roles (read-only tools — it structurally
+         cannot write code, which backs up the brief's own "write no code"
+         instruction with a tool restriction, not just wording)
+       - `description`: the task-id and a few words, e.g. "23-reports PAGE build"
+       - `run_in_background`: `false` — you need the result before you can
+         validate and decide what to spawn next; there is no parallel work to
+         do while it runs, since §2's own rule below forbids parallel spawns
+       - `isolation`: omit. The sub-agent works directly in this checkout, the
+         same as every task before it — there is no worktree isolation in this
+         run.
+  3. When the Agent tool returns, write its full final report to
+     `web/.codex/logs/<task-id>.log` yourself (the tool does not write a log
+     file on its own; you are the one creating the audit trail). Then read the
+     resulting `git diff`. Never trust the report alone: a sub-agent claiming
+     success is a claim, not evidence.
 
-  NEVER read a spawn log in full and never pipe a sub-agent's output through
-  `tee` into your own context. A sub-agent's stderr contains its entire diff:
-  one such log reached 854 KB and reading it back wedged the orchestrator for
-  29 minutes with a completed task it never recorded. The log is written to
-  disk for the human; you read its tail. If you need more, grep it for a
-  specific string — never cat it.
-
-  Before reading any log, check its size. If it exceeds 200 KB, read only the
-  last 20 KB and note the truncation in the ledger.
-
-If `codex exec --full-auto` is not the correct invocation in this environment,
-determine the right one with `codex exec --help` on your first spawn and use it
-consistently thereafter. Record the working invocation in the ledger.
+  A sub-agent's final report is returned as one message, not streamed to a
+  file you could tail — you see the whole thing. If it is unusually long,
+  skim for the REPORT AT THE END section (files changed, requirement IDs,
+  what it could not do) rather than reading every intermediate step it narrates.
 
 Rules:
   - ONE SUB-AGENT AT A TIME. No parallel spawns. Two agents writing the same
@@ -101,7 +107,7 @@ about progress, not your memory.
 Format:
 
   # Autopilot ledger
-  spawn-invocation: codex exec --full-auto "$(cat FILE)"
+  spawn-invocation: Agent tool, subagent_type=general-purpose (SCAFFOLD/PLATFORM/DESIGN/PAGE) or Explore (AUDITOR), run_in_background=false, prompt=brief file content
   current-phase: WP1
   
   | task-id | role | status | attempts | notes |
@@ -469,8 +475,8 @@ honesty about state.
       CHANGE REQUEST, never a client-side workaround (WP-001).
   H6  A task requires a runtime dependency outside the WST-001 budget.
   H7  An invariant grep in §6.2 fails and remediation does not clear it.
-  H8  `codex exec` cannot be invoked successfully after you have tried the
-      alternatives from `codex exec --help`.
+  H8  The Agent tool fails to return a result for a spawn (tool error, not a
+      sub-agent reporting failure — that is a normal §6.4 correctness failure).
   H9  The git working tree contains changes you did not initiate.
 
 On halt: write the reason, the failing evidence, the ledger state, and the exact
@@ -506,9 +512,8 @@ cost money.
 
   1. Read web/.codex/LEDGER.md. If it exists, resume from the first non-DONE
      task and say which one.
-  2. If it does not exist, read every file in §1, create the ledger with the
-     full task graph as PENDING, and confirm the working `codex exec`
-     invocation.
+  2. If it does not exist, read every file in §1 and create the ledger with
+     the full task graph as PENDING.
   3. Begin task 01-scaffold.
   4. Continue until FINAL or a halt condition. Do not ask for approval between
      tasks or between phases.
@@ -519,15 +524,15 @@ cost money.
 | Watch | Command |
 |---|---|
 | Progress | `cat web/.codex/LEDGER.md` |
-| A specific agent's work | `cat web/.codex/logs/<task-id>.log` |
+| A specific agent's work | `cat web/.codex/logs/<task-id>.log` (written by the orchestrator after each spawn returns, not by the sub-agent itself) |
 | Whether it halted | `cat web/.codex/HALT.md` |
 | Backend untouched | `git status --porcelain backend/` — must stay empty |
 
 ## If it halts
 
 `web/.codex/HALT.md` carries the reason, the evidence, and the next action.
-Fix that one thing, then paste the same prompt again — §10 resumes from the
-ledger rather than restarting.
+Fix that one thing, then tell the orchestrator to continue — §10 resumes from
+the ledger rather than restarting.
 
 ## After WP3
 
