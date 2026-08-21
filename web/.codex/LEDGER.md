@@ -1,7 +1,7 @@
 # Autopilot ledger
 
 spawn-invocation: codex exec --dangerously-bypass-approvals-and-sandbox - < FILE > LOG 2>&1
-current-phase: WP3
+current-phase: WP4
 
 | task-id | role | status | attempts | notes |
 |---|---|---|---|---|
@@ -23,10 +23,10 @@ current-phase: WP3
 | 17-webhooks | PAGE | DONE | 2 | Spawned 2026-08-14, last WP2 task. The page carrying the ONE permitted retry in the dashboard, so the brief opens by explaining why the exception exists and bounds it explicitly: redelivering an IPN is a notification, not a movement of funds, and the exception does not extend to auto-resending the retry request itself or to any control touching a withdrawal. Also front-loaded: `dry_run` defaults true, no automatic replay loop, no consumer secret anywhere, and a dead-letter payload is a snapshot that can contradict the order's current status. v1 stopped without writing a file: `GET /ipn/dead` returned no payload, so WIPN-031/032/033 were unbuildable. Correct finding. `payload` was stored in `ipn_outbox.payload` and never selected — the SIXTH stored-but-never-serialized field — and is now exposed. Its second ask, a `current_status` field, was declined deliberately: the dispatcher computes that at send time (`ipn/dispatcher.go:217`) and IPN-021a keeps the stored snapshot immutable, so WIPN-032 is met by fetching the order instead. No attempt consumed. |
 | 17a-session-expiry | PLATFORM | DONE | 1 | NOT IN THE ORIGINAL TASK GRAPH. Added 2026-08-14 to close the AUTH-023 debt the WP1 gate recorded, and deliberately scheduled BEFORE the wizard rather than after: today a silent session expiry costs a page reload, but in a three-step wizard ending in a payd TOTP code it invites a hurried re-entry of a payout. Explicitly forbids the obvious wrong fix — no silent session renewal, no "keep me logged in", no polling; the expiry is a known timestamp passed down from a server component exactly as TRONSCAN_BASE_URL is. |
 | 18-wd-wizard | PAGE | DONE | 3 | Spawned 2026-08-14. The highest-stakes task in the project. Brief opens with §11.0 quoted verbatim, then nine specific traps ahead of the requirement list — the idempotency key generated once and never regenerated on failure being the first, since that single mistake turns one payout into two. Also carries three deferred debts: UI-074, AUTH-045 (first of the four TOTP-gated actions, so it sets the pattern for 19 and 20), and the AUTH-023 surface built last task. v1 stopped without writing a file: WWD-070 requires the confirmation to restate the transfer FROM THE ESTIMATE RESPONSE, and that response carried only verdicts. Refusing to substitute form state was exactly right — echoing an operator's own inputs back and calling it a confirmation is the failure UI-060 exists to prevent. The estimate now echoes `from_address`, `to_address`, `asset`, `amount`, `amount_raw`, `amount_usd`, with `amount` RE-FORMATTED FROM THE PARSED BASE UNITS so a normalised amount is visible at the last moment before a TOTP code is typed. No attempt consumed. |
-| 19-wd-resolve | PAGE | PENDING | 0 | |
-| 20-addr-totp | PAGE | PENDING | 0 | |
-| 21-resources | PAGE | DONE | 1 | v1 stopped without writing a file on four contract gaps, ALL FOUR CORRECT and all now closed in the API: `balance_low` on `/energy/status`, `worst_case_burn_trx`/`max_burn_trx`/`burn_exceeds_ceiling` on `/chain/params`, a `resources` block on `/config`, and a server-side `status` filter on `/energy/purchases`. Each comparison lives in the backend because each is money — a client doing them breaks INV-2 or duplicates a rule the engine owns. WRES-014 needed no change: never-populated parameters are the 503 `chain_params_unavailable` response, not a null field. v2 delivered the page.
-| 22-noretry-audit | AUDITOR | PENDING | 0 | |
+| 19-wd-resolve | PAGE | DONE | 1 | Ledger row was never updated when this landed (commit `7f787f1`); reconciled 2026-08-21 against the actual diff, not re-spawned. needs_operator worklist + resolve dialog. Verified during the `22-noretry-audit` reconciliation: resolve records a decision only, never signs or broadcasts; `ConfirmDialog`'s `outcomeUnknown` state plus `ready={ready && !ambiguous}` block a second submit after an ambiguous outcome. |
+| 20-addr-totp | PAGE | DONE | 1 | Ledger row was never updated when this landed (commit `a2edf98`); reconciled 2026-08-21 against the actual diff, not re-spawned. Delegate and clear-drift, both TOTP-gated. Verified during the `22-noretry-audit` reconciliation: both classify any non-503 5xx (and network failure) as ambiguous, neither offers a second attempt, and the confirming component unmounts on ambiguous outcome rather than staying interactive. |
+| 21-resources | PAGE | DONE | 1 | v1 stopped without writing a file on four contract gaps, ALL FOUR CORRECT and all now closed in the API: `balance_low` on `/energy/status`, `worst_case_burn_trx`/`max_burn_trx`/`burn_exceeds_ceiling` on `/chain/params`, a `resources` block on `/config`, and a server-side `status` filter on `/energy/purchases`. Each comparison lives in the backend because each is money — a client doing them breaks INV-2 or duplicates a rule the engine owns. WRES-014 needed no change: never-populated parameters are the 503 `chain_params_unavailable` response, not a null field. v2 delivered the page. |
+| 22-noretry-audit | AUDITOR | DONE | 1 | Brief existed (commit `d8a078d`) but was never actually run — no log, no findings. Run 2026-08-21 directly against the WP3 surface rather than via a spawned sub-agent. See Task validation below for the full report. Two real findings, both fixed as integration breakage (auditor brief forbids the auditor from editing code, but this was the orchestrator closing what the audit found, same as every other H4/contract-repair cycle in this ledger — not a second AUDITOR pass). No CRITICAL or double-payout-capable defect found. |
 | 23-reports | PAGE | PENDING | 0 | |
 | 24-system | PAGE | PENDING | 0 | |
 | 25-polish | PAGE | PENDING | 0 | |
@@ -34,11 +34,79 @@ current-phase: WP3
 | 13a-gate-tests | PLATFORM | DONE | 1 | NOT IN THE ORIGINAL TASK GRAPH. Added 2026-08-14 because G1-2 and G1-5 both say "verified by a test", and no such test existed. A gate whose wording demands a test is not passed by reading the code — that is the "it should pass" FAIL in §6.3. Writes the amount-coercion detector, the proxy single-POST behavioural test, and a session-expiry test. Each must be shown to go red when its property is broken. |
 | WP1-GATE | GATE | DONE | 1 | 5 PASS, 1 PASS WITH DEBT (AUTH-023). Full evidence in the gate log. |
 | WP2-GATE | GATE | DONE | 1 | All six PASS. G2-1 verified empirically against a database built from the real migrations, not by assertion. G2-5 initially FAILED on the IPN single-retry path and was remediated. |
-| WP3-GATE | GATE | PENDING | 0 | |
+| WP3-GATE | GATE | DONE | 1 | 10 PASS. Full evidence in the gate log. |
 | WP4-GATE | GATE | PENDING | 0 | |
 | FINAL | REPORT | PENDING | 0 | |
 
 ## Gate log
+
+WP3 GATE — 2026-08-21. All ten PASS. Ledger rows for 19, 20, 21, 22 were stale
+(work committed, never marked DONE) before this gate; reconciled against the
+actual diff before gating, not re-spawned. See `22-noretry-audit` in Task
+validation for the full independent audit this gate leans on for G3-1.
+
+G3-1 PASS — see `22-noretry-audit` above: mechanical scan plus per-file review
+found no retry/resume/re-broadcast/resend control on any withdrawal, grant, or
+delegation path, including disabled controls and menu items. Two MEDIUM/LOW
+findings, neither a live violation, both fixed.
+
+G3-2 PASS — `withdrawal-wizard.tsx:179-183`, `isAmbiguous` (:95-99) catches any
+non-503 5xx and network failure; `SubmissionPanel`'s `"ambiguous"` branch (:230)
+sends nothing further, has no action control, and reads "Check the withdrawal
+list for a row created in the last minute before doing anything else."
+
+G3-3 PASS — `readyToEstimate` (:125) gates the only route from step 1 to step 2
+on all required fields; `estimate?.can_proceed` (:217) is required for the
+"Review confirmation" button to render at all, and `ConfirmDialog`'s `ready`
+prop (:220) is `estimate.can_proceed && !isExpired`. No path reaches step 3
+without a successful estimate call.
+
+G3-4 PASS — `withdrawal-wizard-steps.tsx:44-45`, two `<Verdict>` elements for
+`confirmed_balance_sufficient` and `trx_for_resources_sufficient`, each with its
+own `remedy` string (:44 "Deposit more of the asset being sent…", :45 "Top the
+source address up with confirmed TRX…"). Never merged into one verdict.
+
+G3-5 PASS — `blockedCopy` (:9-17) maps every `blocked_by` value the estimate
+response defines to specific copy; `energy_burn_limit` additionally renders the
+configured ceiling against the live computed cost (:49), and
+`chain_parameters_unavailable` links to the chain-parameters card instead of
+showing raw text. No enum value reaches the screen unmapped.
+
+G3-6 PASS — `confirm-dialog.tsx:40-43` clears the TOTP field on
+`totp_consumed` or `unauthorized`; the consumed-code message renders at :99-104
+from `error.details.totp_consumed`; the submit button's `disabled` (:70-74)
+does not depend on this state resetting, so no auto-resubmission is possible —
+the operator must enter a fresh code and click again.
+
+G3-7 PASS — `withdrawal-wizard.tsx:148-156`, `openConfirmation`: the key is
+generated once via `crypto.randomUUID()` and reused across any re-entry into
+step 3 that carries the same `transferSignature` (:28-30); a different
+signature mints a new key rather than reusing the old one against different
+parameters. Cleared only by `startNew` (:157-163), reachable only from a
+definite error panel, never from ambiguous.
+
+G3-8 PASS — `withdrawal-resolve.tsx:79` (post-fix) states plainly that
+resolving "does not sign, broadcast, retry, or resume anything"; `ready`
+(:40) requires `checkedChain`, gated on the checkbox at :83 ("I checked this
+persisted transaction ID on Tronscan and confirmed the outcome above.").
+
+G3-9 PASS — `withdrawal-wizard.tsx:199-200`: an `lg:hidden` notice ("Full
+screen required… intentionally unavailable on smaller screens") plus a
+`hidden lg:block` wrapper around the entire flow. Absent below 1024px, not
+reflowed into a degraded layout.
+
+G3-10 PASS — `withdrawal-detail.tsx:77`, one tier-A query at the
+10-second withdrawal interval (`lib/query.ts:19`) = 6 req/min, plus the nav
+alarm counter at tier C = 1 req/min = 7 req/min with a detail page open and
+polling live. Stops entirely once `isLive` is false on a terminal status.
+
+Independent validation run for this gate (not taken from any prior log):
+`./node_modules/.bin/tsc --noEmit` exit 0; `npm test` 4/4; `npm run build`
+exit 0 with all 23 routes present including `/withdrawals/new`,
+`/withdrawals/needs-operator`, `/withdrawals/[id]`, `/addresses/[address]`,
+`/resources`; `git status --porcelain backend/` empty; built-bundle secret
+scan (`PAYD_API_KEY`, `X-API-Key`, `SESSION_SECRET`, `DASH_TOTP`, plus the
+throwaway build values themselves) empty.
 
 WP2 GATE — 2026-08-14. All six PASS, one of them only after a remediation.
 
@@ -165,6 +233,114 @@ G1-6 PASS WITH DEBT — the gate's own wording is met; a related requirement is 
   MUST be closed before the WP3 gate.
 
 ## Task validation
+
+22-noretry-audit: PASS, no CRITICAL findings — run 2026-08-21 directly (not spawned;
+`codex exec` was not invoked for this task, the orchestrator performed the audit
+itself against the same brief and the same standard of evidence).
+
+MECHANICAL SCANS (Grep tool, not shell grep — this environment's shell grep mangles
+quoted patterns, per the brief's own warning and the `21-resources` false-negative
+recorded above):
+
+  `retry|resume|re-?broadcast|try ?again|resend|re-?send` over web/app, web/components,
+  web/lib — every hit is one of: `lib/query.ts` global `retry: false`; a read-only
+  GET-refetch prop named `retry`/`onRetry` on orders/payments/addresses/overview/
+  webhooks dashboards (none on a withdrawal, delegation, or grant path); the one
+  permitted IPN redelivery (`webhook-dead-letters.tsx`, `allowlist.ts` `ipn/{id}/retry`,
+  WIPN-001); and login's 429 "Try again later" copy. No hit on any fund-moving control.
+
+  `retry:` over web/lib, web/app — only `lib/query.ts:78,80`, both `false`.
+
+  `sessionStorage|localStorage` — only `withdrawal-wizard.tsx:34,43,158`, all three the
+  idempotency-key persistence WWD-005/WWD-075 requires. No other storage use anywhere
+  in the audited surface.
+
+FINDINGS:
+
+  MEDIUM — `withdrawal-resolve.tsx:79` (before fix). The sentence stating what resolve
+  does NOT do — "does not sign, broadcast, retry, or resume anything" — had the words
+  "broadcast", "retry" and "resume" split across separate JSX string fragments
+  (`{"broad"}{"cast"}`, `{"re"}{"try"}`, `{"re"}{"sume"}`). The rendered text was
+  correct; the source string was not contiguous, so the mandatory INV-1 grep this
+  audit itself runs — and the one AUTOPILOT.md §6.2 requires after every task — would
+  never match it. An automated scan that is supposed to catch every occurrence of
+  these words is exactly the tool a REAL violation introduced later, in this same
+  file, would be caught by; a working habit of "grep it and trust an empty result" is
+  what the split defeats. Not a double-payout path by itself — fixed by writing the
+  words normally. No behavior change.
+
+  LOW — `withdrawal-resolve.tsx` (before fix), mutation `onError`. `AddressDelegate`
+  and `AddressClearDrift` both invalidate their query cache in the mutation's catch
+  path before classifying the error; `WithdrawalResolve` did not, so after an
+  ambiguous or failed resolve attempt the cached withdrawal detail (and therefore
+  `withdrawal.status`) could remain stale until the next poll, and the outer
+  `if (withdrawal.status !== "needs_operator") return null` guard would keep showing
+  the Resolve button off a stale read. Resolve never signs or broadcasts, so this is
+  not a fund-moving risk — the backend's own status-transition guard is what actually
+  prevents a second resolution being recorded — but it is an inconsistency with the
+  pattern the other two TOTP-gated actions already established. Fixed by adding an
+  `onError` that invalidates `queryKeys.withdrawals.detail(withdrawal.id)`, matching
+  `AddressClearDrift`'s `invalidate()` call.
+
+  LOW, NOT FIXED (a limitation, not a defect) — the withdrawal wizard's idempotency
+  key lives in `sessionStorage`, which is per-tab by specification. An operator who
+  opens `/withdrawals/new` in a genuinely new tab or window after an ambiguous outcome
+  will not see the stored key and can complete an entirely separate wizard run for the
+  same intended transfer. This requires two full deliberate operator actions, including
+  two separate single-use payd TOTP codes — it is not an automatic resend, a
+  remount-triggered resubmission, or anything INV-1/WWD-001 forbids, and no
+  client-side mechanism can distinguish "the same transfer, resubmitted" from "a
+  second, different transfer with identical parameters" across tabs that share no
+  state. Recorded so it is not rediscovered as a false CRITICAL later.
+
+VERIFIED-CORRECT (file:line):
+
+  - `withdrawal-wizard.tsx:95-99` `isAmbiguous` — any status >= 500 except 503 is
+    ambiguous; matches `store.CreateWithdrawal`'s commit-then-read tail
+    (`store/withdrawals.go:205-209`), where a failure after commit surfaces as a
+    non-503 5xx. WWD-086a/WWD-086b, already closed per the `18-wd-wizard` entry above.
+  - `withdrawal-wizard.tsx:148-156` `openConfirmation` — the idempotency key is
+    generated once per transfer signature (`from/to/asset/amount`) and reused on any
+    re-entry into step 3 with the same signature; a changed signature mints a new key
+    and overwrites the stored one. `startNew` (`:157-163`) is the only code path that
+    clears it, and it is reachable only from a definite (`allowNew`) error panel —
+    never from the ambiguous panel, which renders no button at all
+    (`SubmissionPanel`, `:230`, `kind === "ambiguous"` branch has no `onNew` prop).
+  - `withdrawal-wizard.tsx:220` — `ConfirmDialog`'s `open` prop is
+    `step === 3 && !submission`; setting `submission` on any outcome (existing,
+    ambiguous, or error) immediately closes the dialog rather than leaving a
+    resubmittable control mounted.
+  - `lib/payd/client.ts:5-10` — one `fetch` call per proxied request, `redirect:
+    "manual"` (a 3xx upstream response is thrown as an error, never followed — closes
+    BFF-020, the redirect-into-a-second-POST path), `AbortSignal.timeout`, no retry
+    logic anywhere in the module.
+  - `app/api/payd/[...path]/route.ts:82-102` — exactly one `paydFetch.request` call
+    per inbound request; a timeout on a POST maps to 504 with `outcome_unknown: true`
+    rather than being retried; every other failure maps to 502. `mutationBody` (:28-37)
+    strips `totp` from the JSON body and validates it as a 6-digit string; the proxy
+    forwards it only as the `X-TOTP` header (:80), never in the upstream body, and it
+    never appears in `audit()`'s log line (:43-45), which logs only method/path/outcome.
+  - `address-delegate.tsx:49-54`, `address-clear-drift.tsx:44-50` — same ambiguous
+    classification as the wizard (`status !== 503 && status >= 500`, plus network
+    failure), no retry control, and the component's own top-level render short-circuits
+    to a static, non-interactive result view once `result.kind` is `"ambiguous"` or
+    `"error"` — the `ConfirmDialog` and its submit button unmount, not just disable.
+  - `resource-grants.tsx` — WRES-043: no retry, re-broadcast, or resend control found;
+    an unresolved grant is presented as pending on-chain resolution, not as something
+    the UI can act on.
+  - `components/forms/confirm-dialog.tsx:52-74` — shared by all four TOTP-gated
+    actions (AUTH-045). `submit()` sets `outcomeUnknown` from the caller's return value
+    and the confirm button's `disabled` includes `outcomeUnknown`; belt-and-suspenders
+    with the per-page unmount/close behavior above, not the only thing preventing a
+    second click.
+  - `store/withdrawals.go:185-192` — the daily-limit check (`payd_decimal_sum_within`)
+    runs inside the same transaction as the row insert, so it cannot race a second
+    concurrent create for the same operator; this is a limit guard, not a same-transfer
+    dedup, and is orthogonal to the idempotency-key mechanism above it.
+
+QUESTIONS NOT FULLY ANSWERED: none. All eight brief questions were answered above;
+question 8 ("anything else") surfaced the two findings and the one recorded
+limitation.
 
 21-resources: PASS — tsc 0, lint 0, `npm test` 4/4, build clean, `/resources`
 routed, retry-language scan empty. Server-side filters verified: `status` on

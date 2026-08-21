@@ -35,6 +35,9 @@ export function WithdrawalResolve({ withdrawal }: Readonly<{ withdrawal: Withdra
       void client.invalidateQueries({ queryKey: queryKeys.withdrawals.all });
       setOpen(false);
     },
+    onError: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.withdrawals.detail(withdrawal.id) });
+    },
   });
   const error = isPaydError(mutation.error) ? mutation.error : null;
   const ready = checkedChain && (outcome === "confirmed" || failureReason.trim().length > 0);
@@ -76,7 +79,7 @@ export function WithdrawalResolve({ withdrawal }: Readonly<{ withdrawal: Withdra
         }
       }}
       apiText={<>
-        <p>This records what happened; it does not sign, {"broad"}{"cast"}, {"re"}{"try"}, or {"re"}{"sume"} anything.</p>
+        <p>This records what happened; it does not sign, broadcast, retry, or resume anything.</p>
         <dl className="mt-3 grid gap-3 text-sm"><div><dt className="text-xs uppercase tracking-wide text-ink-faint">Persisted transaction ID</dt><dd>{withdrawal.txid ? <TxidLink txid={withdrawal.txid} tronscanBaseUrl={tronscanBaseUrl} /> : <span className="text-severity-critical">No transaction ID was persisted.</span>}</dd></div><div><dt className="text-xs uppercase tracking-wide text-ink-faint">Last lookup error</dt><dd><code className="select-all break-words font-mono">{withdrawal.last_lookup_error || "—"}</code></dd></div></dl>
         <fieldset className="mt-4 grid gap-2"><legend className="text-sm font-medium">Chain outcome</legend><label className="flex items-center gap-2 text-sm"><input type="radio" name={`outcome-${withdrawal.id}`} checked={outcome === "confirmed"} onChange={() => setOutcome("confirmed")} />confirmed</label><label className="flex items-center gap-2 text-sm"><input type="radio" name={`outcome-${withdrawal.id}`} checked={outcome === "failed"} onChange={() => setOutcome("failed")} />failed</label></fieldset>
         {outcome === "failed" ? <label className="mt-3 grid gap-1 text-sm">Failure reason<textarea required value={failureReason} onChange={(event) => setFailureReason(event.currentTarget.value)} rows={3} className="border border-border-strong bg-panel p-2" /></label> : null}
