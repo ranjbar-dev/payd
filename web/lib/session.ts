@@ -4,8 +4,16 @@ import { createCipheriv, createDecipheriv, createHmac, createHash, randomBytes, 
 
 import { getEnv } from "./env.ts";
 
-const activeSessions = new Map<string, number>();
-const sessionWhoami = new Map<string, { keyName: string; scopes: string[] }>();
+// Route Handlers and page Server Components are bundled as separate server
+// functions by Next.js — even inside one `next start` process — so a plain
+// module-level Map is NOT shared between them: a session created by
+// POST /api/auth/login would be invisible to the dashboard layout's check,
+// making every login redirect straight back to /login. globalThis is the one
+// thing every bundled copy of this module actually shares.
+type SessionStore = { activeSessions: Map<string, number>; sessionWhoami: Map<string, { keyName: string; scopes: string[] }> };
+const globalStore = globalThis as typeof globalThis & { __paydSessionStore?: SessionStore };
+const store: SessionStore = globalStore.__paydSessionStore ??= { activeSessions: new Map(), sessionWhoami: new Map() };
+const { activeSessions, sessionWhoami } = store;
 
 export type Session = { iat: number; exp: number; id: string };
 export type NewSession = { value: string; csrf: string; session: Session };

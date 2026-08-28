@@ -27,6 +27,20 @@ function base64(value: string): Buffer {
   return Buffer.from(value + "=".repeat((4 - (value.length % 4)) % 4), "base64");
 }
 
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32Decode(value: string): Buffer {
+  let bits = "";
+  for (const char of value.toUpperCase().replace(/=+$/, "")) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index === -1) throw new Error("DASH_TOTP_SECRET is not valid base32");
+    bits += index.toString(2).padStart(5, "0");
+  }
+  const bytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(bytes);
+}
+
 function parseHash(hash: string): { memory: number; passes: number; parallelism: number; salt: Buffer; tag: Buffer } | null {
   const match = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/.exec(hash);
   if (!match) return null;
@@ -53,7 +67,7 @@ function totpStep(code: string, step: number): boolean {
   if (!/^\d{6}$/.test(code)) return false;
   const counter = Buffer.alloc(8);
   counter.writeBigUInt64BE(BigInt(step));
-  const digest = createHmac("sha1", getEnv().DASH_TOTP_SECRET).update(counter).digest();
+  const digest = createHmac("sha1", base32Decode(getEnv().DASH_TOTP_SECRET)).update(counter).digest();
   const offset = digest[digest.length - 1] & 15;
   const value = ((digest[offset] & 127) << 24) | (digest[offset + 1] << 16) | (digest[offset + 2] << 8) | digest[offset + 3];
   return String(value % 1_000_000).padStart(6, "0") === code;

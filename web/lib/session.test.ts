@@ -6,6 +6,7 @@ process.env.PAYD_BASE_URL = "http://127.0.0.1:8080";
 process.env.PAYD_API_KEY = "test-key";
 process.env.DASH_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$ZmFrZWhhc2g";
 process.env.DASH_TOTP_SECRET = "dashboard-test-secret";
+process.env.TRONSCAN_BASE_URL = "https://nile.tronscan.org";
 // Random per run, never a fixed literal: `getEnv()` refuses a SESSION_SECRET that
 // appears anywhere in the repository, and a constant test secret gets copied into
 // spawn logs and CI output, which then fails every later run.
