@@ -2,6 +2,7 @@ package withdraw
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
+	tronpb "github.com/ranjbar-dev/hd-wallet/txproto/tron"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	"payd/internal/chain"
@@ -349,6 +352,42 @@ func (f *fakeBroadcast) Send(_ context.Context, payload json.RawMessage) (chain.
 		panic("injected process death after broadcast request")
 	}
 	return f.response, f.err
+}
+
+func TestBroadcastHexPayloadWrapsRawDataAndSignature(t *testing.T) {
+	rawData := []byte{0x0a, 0x02, 0xbe, 0xef}
+	signature := []byte{0xca, 0xfe}
+	payload, err := broadcastHexPayload(&tronpb.SigningOutput{Id: []byte{1}, RawData: rawData, Signature: signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Transaction string `json:"transaction"`
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := hex.DecodeString(request.Transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	number, typ, tagN := protowire.ConsumeTag(encoded)
+	if tagN < 0 || number != 1 || typ != protowire.BytesType {
+		t.Fatalf("raw_data tag = (%d, %d, %d), want (1, bytes, positive)", number, typ, tagN)
+	}
+	raw, valueN := protowire.ConsumeBytes(encoded[tagN:])
+	if valueN < 0 || string(raw) != string(rawData) {
+		t.Fatalf("raw_data = %x, want %x", raw, rawData)
+	}
+	encoded = encoded[tagN+valueN:]
+	number, typ, tagN = protowire.ConsumeTag(encoded)
+	if tagN < 0 || number != 2 || typ != protowire.BytesType {
+		t.Fatalf("signature tag = (%d, %d, %d), want (2, bytes, positive)", number, typ, tagN)
+	}
+	sig, valueN := protowire.ConsumeBytes(encoded[tagN:])
+	if valueN < 0 || string(sig) != string(signature) || tagN+valueN != len(encoded) {
+		t.Fatalf("signature = %x, want %x", sig, signature)
+	}
 }
 
 // TST-018: after the first transfer consumes free bandwidth, the second is held and sourced.

@@ -46,8 +46,17 @@ func TestBroadcastNeverRetriesOnNetworkError(t *testing.T) {
 	var attempts atomic.Int32
 	client.Broadcast.core.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		attempts.Add(1)
-		if request.URL.Path != "/wallet/broadcasttransaction" {
+		if request.URL.Path != "/wallet/broadcasthex" {
 			t.Fatalf("path = %q", request.URL.Path)
+		}
+		var payload struct {
+			Transaction string `json:"transaction"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Transaction != "deadbeef" {
+			t.Fatalf("transaction = %q", payload.Transaction)
 		}
 		if got := request.Header.Get("TRON-PRO-API-KEY"); got != "secret" {
 			t.Fatalf("API key header = %q", got)
@@ -55,11 +64,30 @@ func TestBroadcastNeverRetriesOnNetworkError(t *testing.T) {
 		return nil, errors.New("simulated connection reset")
 	})
 
-	if _, err := client.Broadcast.Send(context.Background(), []byte(`{"txID":"abc"}`)); err == nil {
+	if _, err := client.Broadcast.Send(context.Background(), []byte(`{"transaction":"deadbeef"}`)); err == nil {
 		t.Fatal("broadcast network error was hidden")
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("broadcast attempts = %d, want exactly 1 (CHN-024a/WDR-014a)", got)
+	}
+}
+
+func TestBroadcastReturnsHTTPError(t *testing.T) {
+	client := testClient(t)
+	client.Broadcast.core.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/wallet/broadcasthex" {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader(`node failure`)), Header: make(http.Header)}, nil
+	})
+
+	response, err := client.Broadcast.Send(context.Background(), []byte(`{"transaction":"deadbeef"}`))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("error = %v, want HTTP 500 error", err)
+	}
+	if string(response.Body) != "node failure" {
+		t.Fatalf("response body = %q", response.Body)
 	}
 }
 

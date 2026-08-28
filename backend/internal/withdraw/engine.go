@@ -16,6 +16,7 @@ import (
 
 	hdwallet "github.com/ranjbar-dev/hd-wallet"
 	tronpb "github.com/ranjbar-dev/hd-wallet/txproto/tron"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	"payd/internal/chain"
@@ -497,7 +498,7 @@ func (e *Engine) signAndBroadcast(ctx context.Context, w store.Withdrawal, asset
 	if err != nil {
 		return e.store.WithdrawalNeedsOperator(ctx, w.ID, "txid extraction failed: "+err.Error(), e.now(), e.eventConfig())
 	}
-	payload, err := hdwallet.BroadcastPayload(hdwallet.TRX, out)
+	payload, err := broadcastHexPayload(out)
 	if err != nil {
 		return e.store.WithdrawalNeedsOperator(ctx, w.ID, "broadcast payload failed: "+err.Error(), e.now(), e.eventConfig())
 	}
@@ -509,7 +510,7 @@ func (e *Engine) signAndBroadcast(ctx context.Context, w store.Withdrawal, asset
 	if e.afterAttempt != nil {
 		e.afterAttempt()
 	}
-	response, sendErr := e.broadcaster.Send(ctx, json.RawMessage(payload)) // WDR-014a: this call appears once in the state machine.
+	response, sendErr := e.broadcaster.Send(ctx, payload) // WDR-014a: this call appears once in the state machine.
 	rawResponse := string(response.Body)
 	if rawResponse == "" && sendErr != nil {
 		rawResponse = sendErr.Error()
@@ -982,7 +983,7 @@ func (e *Engine) broadcastResourceGrant(ctx context.Context, grant store.Resourc
 		_ = e.store.FailResourceGrant(ctx, grant.ID, "", err.Error())
 		return false, nil
 	}
-	payload, err := hdwallet.BroadcastPayload(hdwallet.TRX, out)
+	payload, err := broadcastHexPayload(out)
 	if err != nil {
 		_ = e.store.FailResourceGrant(ctx, grant.ID, "", err.Error())
 		return false, nil
@@ -994,7 +995,7 @@ func (e *Engine) broadcastResourceGrant(ctx context.Context, grant store.Resourc
 	if e.afterAttempt != nil {
 		e.afterAttempt()
 	}
-	response, sendErr := e.broadcaster.Send(ctx, json.RawMessage(payload)) // RES-008/013: exactly one broadcast after durable attempt marker.
+	response, sendErr := e.broadcaster.Send(ctx, payload) // RES-008/013: exactly one broadcast after durable attempt marker.
 	rawResponse := string(response.Body)
 	if rawResponse == "" && sendErr != nil {
 		rawResponse = sendErr.Error()
@@ -1273,6 +1274,29 @@ func signingInput(w store.Withdrawal, asset config.Asset, reference store.Refere
 			OwnerAddress: w.FromAddress, ContractAddress: asset.Contract, ToAddress: w.ToAddress, Amount: amount.Bytes()}}
 	}
 	return &tronpb.SigningInput{Transaction: tx}, nil
+}
+
+// broadcastHexPayload wraps hd-wallet's already-signed raw_data in the on-chain
+// TRON Transaction envelope required by /wallet/broadcasthex (WDR-014). The
+// hd-wallet TRON proto exposes the raw transaction as bytes, but not this outer
+// protocol message; its fixed fields are raw_data=1 and signature=2.
+func broadcastHexPayload(out proto.Message) (json.RawMessage, error) {
+	signed, ok := out.(*tronpb.SigningOutput)
+	if !ok || signed == nil || len(signed.GetId()) == 0 || len(signed.GetRawData()) == 0 || len(signed.GetSignature()) == 0 {
+		return nil, errors.New("TRON signing output is missing required fields")
+	}
+
+	transaction := protowire.AppendTag(nil, 1, protowire.BytesType)
+	transaction = protowire.AppendBytes(transaction, signed.GetRawData())
+	transaction = protowire.AppendTag(transaction, 2, protowire.BytesType)
+	transaction = protowire.AppendBytes(transaction, signed.GetSignature())
+	payload, err := json.Marshal(struct {
+		Transaction string `json:"transaction"`
+	}{Transaction: hex.EncodeToString(transaction)})
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func classifyBroadcast(response chain.Response, sendErr error) (string, string) {

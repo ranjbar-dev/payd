@@ -334,7 +334,7 @@ func (c *BroadcastClient) Send(ctx context.Context, payload json.RawMessage) (Re
 	if err != nil {
 		return Response{}, err
 	}
-	response, err := c.core.sendOnce(ctx, endpoint, http.MethodPost, "/wallet/broadcasttransaction", payload)
+	response, err := c.core.sendOnce(ctx, endpoint, http.MethodPost, "/wallet/broadcasthex", payload)
 	if err != nil {
 		c.core.pool.failed(endpoint.index, false)
 		return Response{}, err
