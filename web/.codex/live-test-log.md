@@ -59,6 +59,60 @@ Bugs found + fixed live: **F1** (dead `/chain` links), **F2** (`npm test` red on
 **F3** (order-create blocked by bad regex), **F4** (proxy 400s bodyless POST).
 Commits: `2c44291`, `bd22499`, `26cc59c`, `53a3827`.
 
+## On-chain run (partial funds: 1000 TRX + 1000 USDT on TMcFNV…, 2026-08-28 ~20:00)
+
+User could only faucet one wallet. All funds landed directly on
+`TMcFNV2vUTZrJ64SaZhQ1E5B8oiCDfLbw3` (order `onchain-main`, expected 1.234567 USDT).
+
+### T7 real payment + attribution + IPN — PASS
+- 1000 USDT → order `onchain-main` → `received 1000`, `overpaid 998.765433`,
+  status `paid`→`confirmed` (solidified). **Overpayment / credit_and_log variant covered.**
+- IPN sink received `order.payment_seen` → `order.paid` → `order.confirmed`, all
+  `signature=true`. Full order-lifecycle IPN path verified.
+- 1000 TRX → same address → `unattributed`, reason `asset_mismatch` (**wrong-asset
+  variant covered**).
+- Dashboard: Payments list shows both (1000 USDT confirmed w/ order link, 1000 TRX
+  `! unattributed`), Nile tronscan links, amounts byte-identical.
+- Address detail: confirmed 1000 USDT + 1000 TRX in **separate** confirmed/pending
+  columns (INV-3); USDT row "Cannot withdraw — Blocked by energy", TRX "Can withdraw";
+  energy 0/131000 "No", bandwidth 600/345 "Yes".
+
+### F5 — asset-mismatch attribution unreachable → FIXED (`16f1496`)
+See finding above. G2-3 / WPAY-034 / WPAY-035 now verified end-to-end; attribution
+mutation succeeds, worklist empties, nav alarm 1→0 (WPAY-036 / G2-5).
+
+### T10 withdrawal wizard — UI PASS, on-chain broadcast blocked by Nile RPC outage
+- Wizard: compose (source dropdown from `/wallets/with-balance`, per-asset balance
+  table with can-withdraw/blocked_by), "I pasted and verified" gate, → estimate
+  (projected energy `existing`, cost `0 TRX`, **two separate verdicts** "Confirmed
+  asset balance: sufficient" / "Confirmed TRX for resources: sufficient" — G3-4),
+  → confirm dialog restating **from the estimate** (source/dest/amount/base-units/USD/
+  energy), "payd code" field labelled as such (AUTH-003), submit disabled until 6
+  digits (G3-6). All PASS.
+- Submit → withdrawal `01M14KG2…` created, detail page polled `requested`→`broadcast`
+  →`failed`.
+- **Root cause of `failed`: `broadcast_response = {"Error":"class
+  java.lang.NullPointerException : null"}`.** Both `nile.trongrid.io` and
+  `api.nileex.io` return this NPE on `POST /wallet/broadcasttransaction` — even for
+  an empty `{}` body — so Nile's broadcast RPC is currently down. NOT a payd or
+  dashboard bug: `hdwallet.BroadcastPayload` emits a valid
+  `{txID,raw_data_hex,signature[]}` payload.
+- **payd handled it correctly:** signed once, broadcast once, no retry, classified
+  the node error as non-deterministic, reconciled against chain → tx absent →
+  terminal `failed` with `resolved_by: chain_absence`, **balance intact** (1000 TRX
+  still confirmed). Retried once more via API → identical NPE → `failed`.
+- **Dashboard `failed` detail — INV-1 acid test PASS:** shows failure reason, txid
+  (Nile tronscan link), raw `broadcast_response` with the NPE (WG-005), and a
+  repo-/DOM-wide search finds **no** retry / resume / re-broadcast / resend / try-again
+  control (`retryControls: []`). Withdrawals list: both `failed`, daily meter still
+  0 used (failed withdrawals don't consume the cap).
+- **Still unverified (needs a working Nile broadcast RPC):** a `confirmed`
+  withdrawal, delegate-resources success (also a broadcast), T8 restart safety,
+  T9 drift + clear-drift.
+
+Minor: `/withdrawals/new?from_address=…` (the address-detail "Withdraw from this
+address" link) does not pre-select the source in the wizard dropdown.
+
 ## Faucet-gated — WAITING ON USER
 
 Orders created and addresses assigned for the on-chain run:
