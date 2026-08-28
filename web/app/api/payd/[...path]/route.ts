@@ -25,9 +25,14 @@ function responseFrom(upstream: Response): Response {
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-async function mutationBody(request: Request): Promise<{ body: string; totp?: string } | null> {
+async function mutationBody(request: Request): Promise<{ body?: string; totp?: string } | null> {
+  const raw = (await request.text()).trim();
+  // A parameterless action (POST /wallets/{address}/disable, POST /ipn/{id}/retry)
+  // legitimately sends no body. Forward it as-is; only a present-but-malformed
+  // body is a client error.
+  if (raw === "") return {};
   let value: unknown;
-  try { value = await request.json(); } catch { return null; }
+  try { value = JSON.parse(raw); } catch { return null; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const body = { ...(value as Record<string, unknown>) };
   const totp = body.totp;
