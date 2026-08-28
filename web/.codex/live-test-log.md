@@ -106,6 +106,13 @@ mutation succeeds, worklist empties, nav alarm 1→0 (WPAY-036 / G2-5).
   repo-/DOM-wide search finds **no** retry / resume / re-broadcast / resend / try-again
   control (`retryControls: []`). Withdrawals list: both `failed`, daily meter still
   0 used (failed withdrawals don't consume the cap).
+- **Narrowed:** on `nile.trongrid.io`, `/wallet/broadcasthex` and
+  `/wallet/createtransaction` return proper protobuf/JSON errors (endpoints work),
+  but `/wallet/broadcasttransaction` NPEs on *every* input shape. Only that one
+  endpoint is broken. payd broadcasts via `broadcasttransaction`
+  (`internal/chain/client.go:337`) — fine on mainnet, dead on Nile right now.
+  A `broadcasthex` fallback would unblock Nile but touches the single-broadcast
+  fund-moving path (`WDR-014a`) — flagged for a human decision, not changed.
 - **Still unverified (needs a working Nile broadcast RPC):** a `confirmed`
   withdrawal, delegate-resources success (also a broadcast), T8 restart safety,
   T9 drift + clear-drift.
