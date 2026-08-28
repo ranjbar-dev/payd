@@ -108,14 +108,47 @@ mutation succeeds, worklist empties, nav alarm 1→0 (WPAY-036 / G2-5).
   0 used (failed withdrawals don't consume the cap).
 - **Narrowed:** on `nile.trongrid.io`, `/wallet/broadcasthex` and
   `/wallet/createtransaction` return proper protobuf/JSON errors (endpoints work),
-  but `/wallet/broadcasttransaction` NPEs on *every* input shape. Only that one
-  endpoint is broken. payd broadcasts via `broadcasttransaction`
-  (`internal/chain/client.go:337`) — fine on mainnet, dead on Nile right now.
-  A `broadcasthex` fallback would unblock Nile but touches the single-broadcast
-  fund-moving path (`WDR-014a`) — flagged for a human decision, not changed.
-- **Still unverified (needs a working Nile broadcast RPC):** a `confirmed`
-  withdrawal, delegate-resources success (also a broadcast), T8 restart safety,
-  T9 drift + clear-drift.
+  but `/wallet/broadcasttransaction` NPEs on *every* input shape — it needs a
+  parsed `raw_data` object and gets only `raw_data_hex` from hd-wallet's payload.
+
+### F6 — payd broadcast switched to `/wallet/broadcasthex` (`ae2fd03`, codex, backend)
+- `broadcastHexPayload()` in `internal/withdraw/engine.go` wraps the signed
+  `raw_data` + `signature` in the full TRON `Transaction` protobuf envelope
+  (fields 1 and 2 via `protowire`), hex-encodes, sends as `{"transaction":"<hex>"}`.
+- `BroadcastClient.Send` path → `/wallet/broadcasthex`. Still **exactly one**
+  HTTP request — `WDR-014a`/`CHN-024a` no-retry preserved. Both withdrawals and
+  resource-grant self-delegation use it. `broadcast_response` still stored verbatim.
+- Tests added; `go build ./... && go vet ./...` clean; `go test ./internal/chain
+  ./internal/withdraw` = 41 pass.
+
+### T10 withdrawal SUCCESS path — PASS (after F6)
+- API + wizard: TRX withdrawal 7 TRX from `TMcFNV…` → `TVF2Mp…` → `requested →
+  broadcast → confirmed`, txid `21648648…f3aa`, `broadcast_response
+  {"result":true,"code":"SUCCESS"}`. Balance `TMcFNV… TRX` 1000 → **993** (−7,
+  fee 0). IPN sink: `withdrawal.confirmed`, `signature=true`. Daily meter:
+  `used_usd 2.3737` / `remaining 4997.6263` — the confirmed withdrawal consumes
+  the UTC-day cap, the 2 earlier `failed` ones do not (WWD-025).
+- Dashboard detail on `confirmed`: status, txid (Nile tronscan), Confirmed
+  timestamp, Total cost — and still **no retry control** (INV-1 holds on the
+  success path too).
+
+### Delegate resources (TOTP) — UI/broadcast path PASS; on-chain needs a manual stake
+- `/addresses/{addr}` → "Delegate resources" → dialog ("attempted exactly once
+  and never retried", `resources:write`, resource-wallet-before state), ENERGY
+  radio, units `32000`, payd code → "Broadcast delegation" → `POST
+  /wallets/{addr}/delegate` 202 → grant `01M14NQGK…` created, "Open recorded
+  grant" link. Grant → `failed`, `failure_reason: "insufficient delegatable
+  resource"` (nobody has staked TRX on the resource wallet — a manual chain op
+  payd never performs). TOTP gate, exactly-once broadcast, failure handling, and
+  the Resources → grants table all verified.
+
+### Still unverified (setup constraints, not defects)
+- T8 restart safety, T9 balance drift + clear-drift — need a `seen` payment
+  mid-flight / a manufactured chain-vs-DB disagreement.
+- Underpayment→`partial` and separate overpayment order — only one address was
+  funded; the overpayment/credit_and_log path is covered by the 1000-USDT-on-a-
+  1.234567-order case.
+- A *successful* delegation — needs TRX staked on the resource wallet first.
 
 Minor: `/withdrawals/new?from_address=…` (the address-detail "Withdraw from this
 address" link) does not pre-select the source in the wizard dropdown.
