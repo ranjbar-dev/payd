@@ -59,6 +59,15 @@
     outline-offset: 2px;
   }
 
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
