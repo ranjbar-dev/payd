@@ -90,11 +90,11 @@ function readinessDetail(
   switch (reason) {
     case "database_unavailable": return { href: "/system", text: "Database is unavailable; payment processing cannot read its operational state." };
     case "database_unwritable": return { href: "/system", text: "Database is unwritable; payment processing cannot record state." };
-    case "chain_lag": return { href: "/chain", text: <>Chain follower lag: {chain?.lag_blocks ?? "—"} blocks / 20.</> };
-    case "solidified_stale": return { href: "/chain", text: <>Solidified height: {chain?.solidified_height ?? "—"}; latest block <Timestamp seconds={chain?.last_block_timestamp} />.</> };
+    case "chain_lag": return { href: "/system?tab=health", text: <>Chain follower lag: {chain?.lag_blocks ?? "—"} blocks / 20.</> };
+    case "solidified_stale": return { href: "/system?tab=health", text: <>Solidified height: {chain?.solidified_height ?? "—"}; latest block <Timestamp seconds={chain?.last_block_timestamp} />.</> };
     case "price_stale": return { href: "/resources", text: <>Oldest cached price: <Timestamp seconds={oldestPrice} />.</> };
     case "trongrid_quota_projection": return { href: "/system", text: <>TronGrid quota projection: {quota?.percent_used ?? "—"}% / 90%.</> };
-    case "reorg_depth_exceeded": return { href: "/chain", text: <>Chain reorganisation suspected: {chain?.reorg_suspected ? "yes" : "reported by readiness"}.</> };
+    case "reorg_depth_exceeded": return { href: "/payments/orphaned", text: <>Chain reorganisation suspected: {chain?.reorg_suspected ? "yes" : "reported by readiness"}.</> };
     case "energy_burn_ceiling": return { href: "/resources", text: <>Energy fee: {params?.getEnergyFee ?? "—"} SUN/unit; burn ceiling: {config ? <Amount value={config.energy.max_burn_trx} asset="TRX" /> : "—"}.</> };
     case "clock_skew": return { href: "/system", text: "Clock skew can cause withdrawals to be rejected or expire immediately, indistinguishable from an RPC fault." };
     case "clock_unavailable": return { href: "/system", text: "Clock availability failure can cause withdrawals to be rejected or expire immediately, indistinguishable from an RPC fault." };
@@ -147,7 +147,7 @@ export function OverviewDashboard() {
           {readiness.data ? <div className="space-y-3"><StatusBadge status={readiness.data.status} />{readiness.data.reasons?.length ? <ul className="space-y-2">{readiness.data.reasons.map((reason) => { const detail = readinessDetail(reason, chain.data, quota.data, prices.data, params.data, config.data); return <li key={reason} className="border-l-2 border-severity-warning pl-2 text-sm"><Link className="text-severity-warning underline underline-offset-2" href={detail.href}>{detail.text}</Link></li>; })}</ul> : <p className="text-ink-secondary">All readiness checks are passing.</p>}</div> : <p className="text-ink-faint">Readiness has not loaded.</p>}
           <ErrorNotice error={readiness.isError ? readiness.error : null} updatedAt={readiness.dataUpdatedAt} onRetry={() => void readiness.refetch()} />
         </Card>
-        <Card title="Chain" href="/chain">
+        <Card title="Chain" href="/system?tab=health">
           {chain.data ? <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm"><dt className="text-ink-secondary">Height</dt><dd className="font-mono tabular-nums">{chain.data.last_height}</dd><dt className="text-ink-secondary">Solidified</dt><dd className="font-mono tabular-nums">{chain.data.solidified_height}</dd><dt className="text-ink-secondary">Lag</dt><dd className="font-mono tabular-nums">{chain.data.lag_blocks} / 20 blocks · {duration(chain.data.lag_seconds)}</dd><dt className="text-ink-secondary">Last block</dt><dd><Timestamp seconds={chain.data.last_block_timestamp} /></dd><dt className="text-ink-secondary">Reorg</dt><dd>{chain.data.reorg_suspected ? <Link className="text-severity-warning underline underline-offset-2" href="/payments/orphaned">⚠ Reorg suspected — orphaned payments</Link> : "No reorg suspected"}</dd></dl> : <p className="text-ink-faint">Chain state has not loaded.</p>}
           <ErrorNotice error={chain.isError ? chain.error : null} updatedAt={chain.dataUpdatedAt} onRetry={() => void chain.refetch()} />
         </Card>
