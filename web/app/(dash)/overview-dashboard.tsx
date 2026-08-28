@@ -134,7 +134,7 @@ export function OverviewDashboard() {
       <section className="border border-border-subtle bg-panel p-3">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-secondary">Alarms</h2>
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          <Link className="needs-operator block rounded-sm focus-visible:outline-offset-2" href="/withdrawals/needs-operator"><AlarmCounter label="needs_operator" count={alarms.needsOperator} severity="critical" /></Link>
+          <Link className={`${alarms.needsOperator > 0 ? "needs-operator" : ""} block rounded-sm focus-visible:outline-offset-2`} href="/withdrawals/needs-operator"><AlarmCounter label="needs_operator" count={alarms.needsOperator} severity="critical" /></Link>
           <Link className="group relative block rounded-sm focus-visible:outline-offset-2" href="/payments/unattributed" aria-describedby="overview-unattributed"><AlarmCounter label="Unattributed payments" count={alarms.unattributed + alarms.orphaned} /><span id="overview-unattributed" className="sr-only absolute inset-x-1 bottom-full z-10 mb-1 border border-border-strong bg-raised px-2 py-1 text-xs text-ink-secondary group-hover:not-sr-only group-focus-visible:not-sr-only">{alarms.unattributed} unattributed; {alarms.orphaned} orphaned</span></Link>
           <Link className="block rounded-sm focus-visible:outline-offset-2" href="/orders/funded-terminal"><AlarmCounter label="Funded terminal" count={alarms.fundedTerminal} /></Link>
           <Link className="block rounded-sm focus-visible:outline-offset-2" href="/webhooks"><AlarmCounter label="Dead IPNs" count={alarms.deadIpns} /></Link>

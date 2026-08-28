@@ -71,7 +71,7 @@ export function AlarmNavigation() {
     <div className="mt-auto border-t border-border-subtle p-3">
       <p className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Alarms</p>
       <div className="space-y-2">
-        <Link className="needs-operator block rounded-sm focus-visible:outline-offset-2" href="/withdrawals/needs-operator">
+        <Link className={`${counts.needsOperator > 0 ? "needs-operator" : ""} block rounded-sm focus-visible:outline-offset-2`} href="/withdrawals/needs-operator">
           <AlarmCounter label="needs_operator" count={counts.needsOperator} severity="critical" />
         </Link>
         <Link className="group relative block rounded-sm focus-visible:outline-offset-2" href="/payments/unattributed" aria-describedby="unattributed-breakdown">

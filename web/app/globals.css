@@ -118,4 +118,11 @@
   .alarm-counter[data-count="0"] {
     color: var(--text-faint);
   }
+
+  /* A resolved alarm is the normal state — do not keep screaming red at zero,
+     or the colour stops meaning anything when it actually fires. */
+  .alarm-counter[data-severity="critical"][data-count="0"] {
+    border-color: var(--border-subtle);
+    background: transparent;
+  }
 }
