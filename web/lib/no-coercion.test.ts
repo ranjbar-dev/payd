@@ -25,6 +25,7 @@ const allowed = new Map<string, string>([
   ["app/(dash)/payments-dashboard.tsx:const date = new Date(Number(seconds) * 1000);", "local date filter"],
   ["app/(dash)/payments-dashboard.tsx:const resolvedRange = filters.from || filters.to ? <p className=\"text-xs text-ink-secondary\">Block range (UTC): {filters.from ? <Timestamp seconds={Number(filters.from)} variant=\"utc-day\" /> : \"unbounded\"} to {filters.to ? <Timestamp seconds={Number(filters.to)} variant=\"utc-day\" /> : \"unbounded\"}, inclusive.</p> : null;", "UTC date filter"],
   ["lib/session.ts:exp: now + Number(getEnv().SESSION_TTL_SECONDS) * 1000,", "session TTL milliseconds"],
+  ["app/api/auth/login/route.ts:for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));", "base32 bit-group to byte in TOTP decode, not money"],
 ]);
 
 function detect(source: string, file = "inline.ts"): Hit[] {

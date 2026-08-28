@@ -11,3 +11,5 @@ payd.*.yaml
 
 *.exe
 *.log
+# Playwright MCP run artifacts
+.playwright-mcp/

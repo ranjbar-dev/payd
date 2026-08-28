@@ -1,0 +1,7 @@
+.secrets/
+*.exe
+*.db
+*.db-shm
+*.db-wal
+payd.*.yaml
+seed.age
