@@ -37,19 +37,24 @@ screen they need most.
 | DAT-006 | **Withdrawal routes MUST be budgeted against 10 req/min, not 100.** Tier A on `/withdrawals/{id}` MUST therefore use a 10-second interval, not 5. With the list at tier B this totals 8 req/min, leaving headroom for the operator's own actions. A 5-second detail poll (12/min) exceeds the cap by itself |
 | DAT-007 | After a 429, every query MUST back off to 60 seconds for two minutes, and the UI MUST show a non-blocking notice explaining that refresh has slowed. Retrying a 429 at the same cadence turns a brief limit into a sustained one |
 | DAT-008 | Identical in-flight requests MUST be de-duplicated. Two components needing the alarm counts MUST share one request |
-| DAT-009 | The nav alarm counters MUST be fetched with `limit=1` and read from the response's total/count field rather than fetching full pages. A counter is a number, not a list |
+| DAT-009 | **The nav alarm counters MUST come from `GET /stats`, which already carries them.** The list endpoints do NOT expose a total: `OrderList`, `FundedOrderList`, `PaymentList`, `WithdrawalList`, and `DeadIPNPage` return rows plus `next_cursor` and nothing else, so a `limit=1` probe can establish zero versus non-zero but never an exact count. `/stats` gives `needs_operator`, `payments["unattributed"]`, `orphaned_unresolved`, and `ipn_dead` (per consumer, summed) exactly — four counters in one request, on a query the Overview page already makes. See `WOVW-004` for the funded-terminal counter, which `/stats` cannot supply |
 | DAT-010 | Total steady-state consumption with one tab open on the busiest page MUST stay under 30 req/min, leaving room for a second tab and for operator actions. Any change that breaks this MUST update the worked example below |
 
 ### Worked example (busiest realistic case)
 
 | Source | Endpoints | Interval | req/min |
 |---|---|---|---|
-| Nav alarm counters | 4 | 60s | 4 |
-| Overview page | `/stats`, `/chain/status`, `/workers`, `/chain/quota` | 30s | 8 |
+| Nav alarm counters | `/stats` — all five counts | 60s | 1 |
+| Overview page | `/chain/status`, `/workers`, `/chain/quota`, `/readyz`, `/prices`, `/chain/params`, `/reports/volume` | 30s | 14 |
+| Overview `/stats` | shared with the nav counters, not fetched twice (`DAT-008`) | 30s | 2 |
 | One withdrawal detail open, in flight | `/withdrawals/{id}` | 10s | 6 |
-| **Total** | | | **18** |
+| **Total** | | | **23** |
 
-Two tabs: 36/min against 100. Withdrawal-scoped: 6/min against 10.
+Two tabs: 46/min against 100. Withdrawal-scoped: 6/min against 10.
+
+Away from the Overview page the nav costs **one** request per minute for all five
+alarm counters, because `/stats` carries them together. The four separate probes
+this replaced cost four, and returned no exact figure.
 
 ## 5.3 Cursor pagination
 
@@ -75,7 +80,7 @@ Backend `API-024`: `{"error": {"code", "message", "details"}}`.
 | DAT-030 | The UI MUST branch on `error.code`, never on `error.message`. Messages are human text and will change |
 | DAT-031 | Every error surface MUST show the `code` verbatim somewhere copyable, so an operator can quote it in a bug report |
 | DAT-032 | `details` MUST be rendered when present. It carries the actionable part: `totp_consumed`, the conflicting fields of `external_ref_conflict`, `blocked_by` entries |
-| DAT-033 | These codes MUST have specific, written copy rather than a generic failure toast: `unauthorized`, `rate_limited`, `insufficient_balance`, `external_ref_conflict`, `idempotency_key_reuse`, `totp_in_body`, `price_stale`, `pool_exhausted`, `upstream_unreachable`, `upstream_timeout`. The exact wording lives with each page's spec |
+| DAT-033 | These codes MUST have specific, written copy rather than a generic failure toast: `unauthorized`, `rate_limited`, `insufficient_balance`, `external_ref_conflict`, `idempotency_key_reuse`, `totp_in_body`, `price_stale`, `address_pool_exhausted`, `upstream_unreachable`, `upstream_timeout`. The exact wording lives with each page's spec |
 | DAT-034 | A failed mutation MUST NOT be auto-retried by the query client. Mutations MUST be configured with `retry: false` globally, not per call (`BFF-022`) |
 | DAT-035 | A failed read MUST leave the last good data visible with a staleness marker, rather than replacing the page with an error. An operator watching a withdrawal does not want the screen to empty because one poll failed |
 | DAT-036 | A 401 from the proxy MUST redirect to `/login` preserving the intended path. A 401 from payd (bad key or missing scope) MUST NOT — it is a configuration fault and MUST render the scope banner instead |

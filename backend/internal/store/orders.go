@@ -48,6 +48,10 @@ type Order struct {
 	ExpiresAt      int64
 	CreatedAt      int64
 	UpdatedAt      int64
+	// AddressReleasedAt closes the assignment window (ORD-002b). Nil while the
+	// address is still held by this order, and also once cooldown has returned it
+	// to the pool, since POOL-005 clears the record rather than archiving it.
+	AddressReleasedAt *int64
 }
 
 type CreateOrderParams struct {
@@ -564,21 +568,32 @@ func (s *Store) AttributePayment(ctx context.Context, paymentID int64, orderID s
 	return tx.Commit()
 }
 
+// address_released_at closes the ORD-002b assignment window. It is guarded on
+// assigned_order_id: POOL-005 hands the address to the next order once cooldown
+// ends, and an unguarded join would report that order's release time as this
+// one's, which is a wrong attribution boundary rather than a missing one.
 const orderSelect = `SELECT id, external_ref, address_id, address, asset, expected_raw, received_raw,
     overpaid_raw, status, resolution, resolution_note, resolved_at, price_usd, price_at,
-    COALESCE(metadata, '{}'), COALESCE(consumer, ''), expires_at, created_at, updated_at FROM orders`
+    COALESCE(metadata, '{}'), COALESCE(consumer, ''), expires_at, created_at, updated_at,
+    (SELECT released_at FROM addresses
+       WHERE addresses.id = orders.address_id AND addresses.assigned_order_id = orders.id)
+    FROM orders`
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanOrder(row rowScanner) (Order, error) {
 	var order Order
 	var externalRef, resolution, resolutionNote, priceUSD sql.NullString
-	var resolvedAt, priceAt sql.NullInt64
+	var resolvedAt, priceAt, addressReleasedAt sql.NullInt64
 	err := row.Scan(&order.ID, &externalRef, &order.AddressID, &order.Address, &order.Asset, &order.ExpectedRaw,
 		&order.ReceivedRaw, &order.OverpaidRaw, &order.Status, &resolution, &resolutionNote, &resolvedAt,
-		&priceUSD, &priceAt, &order.Metadata, &order.Consumer, &order.ExpiresAt, &order.CreatedAt, &order.UpdatedAt)
+		&priceUSD, &priceAt, &order.Metadata, &order.Consumer, &order.ExpiresAt, &order.CreatedAt, &order.UpdatedAt,
+		&addressReleasedAt)
 	if err != nil {
 		return Order{}, err
+	}
+	if addressReleasedAt.Valid {
+		order.AddressReleasedAt = &addressReleasedAt.Int64
 	}
 	if externalRef.Valid {
 		order.ExternalRef = &externalRef.String

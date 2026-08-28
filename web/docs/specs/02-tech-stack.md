@@ -70,7 +70,7 @@ web/
 | ID | Requirement |
 |---|---|
 | WST-010 | `lib/payd/` and `lib/session.ts` MUST be server-only. Every file in them MUST carry `import 'server-only'` at the top, so an accidental client import fails at build time rather than shipping the API key to the browser |
-| WST-011 | `app/api/payd/[...path]/route.ts` MUST be the only place in the codebase that sets the `X-API-Key` header |
+| WST-011 | `app/api/payd/[...path]/route.ts` MUST be the only place in the codebase that sets the `X-API-Key` header. Server-side callers that need payd before a request exists — the login handler's `AUTH-030` whoami check — MUST invoke the proxy handler in process rather than setting the key themselves (`BFF-013`) |
 | WST-012 | The `app/(dash)/` route group MUST enforce the session in its `layout.tsx`, so a new page is protected by existing there rather than by remembering to add a guard |
 | WST-013 | The scaffolded `app/transactions/` directory MUST be deleted. It maps to no backend concept: money in is `payments`, money out is `withdrawals`, and the two have different tables, lifecycles, and scopes |
 | WST-014 | Response types MUST be derived from `backend/internal/api/openapi.yaml`, not hand-written from these docs. When the contract changes, the type MUST break the build |
@@ -87,10 +87,12 @@ Environment variables, all server-side, none prefixed `NEXT_PUBLIC_`.
 | `DASH_TOTP_SECRET` | Session TOTP secret — **not** payd's |
 | `SESSION_SECRET` | Cookie signing key, ≥32 bytes |
 | `SESSION_TTL_SECONDS` | Default 28800 (8h) |
+| `TRONSCAN_BASE_URL` | Block explorer origin, e.g. `https://tronscan.org` or `https://nile.tronscan.org` |
 
 | ID | Requirement |
 |---|---|
-| WST-020 | No secret MAY be exposed via a `NEXT_PUBLIC_` variable. There MUST be no `NEXT_PUBLIC_` variable that names a key, secret, hash, or URL of the backend |
+| WST-020 | **There MUST be no `NEXT_PUBLIC_` variable at all**, secret or otherwise. Values the browser legitimately needs — `TRONSCAN_BASE_URL` is the only one — reach it by being read server-side and passed down deliberately from a server component. The rule is absolute rather than "no secrets" because "is this one safe to expose" is a judgement call made per variable, under time pressure, by whoever adds the next one; a blanket ban is checkable by a single grep (`§6.2`) and has no judgement in it |
+| WST-020a | `TRONSCAN_BASE_URL` MUST be server-only, required at startup, and validated as an https origin. It MUST NOT default to mainnet: an unset value that silently resolves to `tronscan.org` makes a Nile deployment indistinguishable from a mainnet one, which is how a real payout gets made in the belief that it is a test (`UI-033`, `WSYS-054`). Fail to boot instead |
 | WST-021 | Startup MUST fail loudly if any variable above is missing or empty, naming the variable. A dashboard that boots without `PAYD_API_KEY` and 401s on every page is a worse failure than not booting |
 | WST-022 | `SESSION_SECRET` MUST be rejected at startup if shorter than 32 bytes or equal to any value that appears in the repository, including example files |
 | WST-023 | The dashboard MUST verify its key's scopes at startup or first request via `GET /auth/whoami`, and MUST render a persistent banner naming any missing scope rather than failing per-page with an opaque 401 |

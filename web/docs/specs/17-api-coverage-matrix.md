@@ -17,9 +17,9 @@ changes.
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
 | POST | `/api/v1/orders` | `orders:write` | Orders → create | `WORD-030` |
-| GET | `/api/v1/orders` | `orders:read` | Orders → list | `WORD-010` |
+| GET | `/api/v1/orders` | `orders:read` | Orders → list; Orders → create (external_ref conflict lookup); Payments → attribute dialog (order search) | `WORD-010`, `WORD-037`, `WPAY-033` |
 | GET | `/api/v1/orders/funded-terminal` | `orders:read` | Orders → funded-terminal worklist | `WORD-060` |
-| GET | `/api/v1/orders/{id}` | `orders:read` | Orders → detail | `WORD-020` |
+| GET | `/api/v1/orders/{id}` | `orders:read` | Orders → detail; Payments → payment drawer, orphaned worklist; Webhooks → dead letters | `WORD-020`, `WPAY-022`, `WPAY-043`, `WIPN-032` |
 | POST | `/api/v1/orders/{id}/extend` | `orders:write` | Orders → detail | `WORD-053` |
 | GET | `/api/v1/orders/{id}/events` | `orders:read` | Orders → detail, events tab | `WORD-025` |
 | POST | `/api/v1/orders/{id}/cancel` | `orders:write` | Orders → detail | `WORD-050` |
@@ -38,7 +38,7 @@ changes.
 
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
-| GET | `/api/v1/wallets` | `wallets:read` | Addresses → pool list | `WADR-001` |
+| GET | `/api/v1/wallets` | `wallets:read` | Addresses → pool list; Withdrawals → wizard (known-destination check) | `WADR-001`, `WWD-053` |
 | GET | `/api/v1/wallets/with-balance` | `wallets:read` | Withdrawals → wizard source; Addresses → filter | `WADR-070` |
 | GET | `/api/v1/wallets/needs-resources` | `wallets:read` | Addresses → needs-resources view | `WADR-040` |
 | GET | `/api/v1/wallets/{address}` | `wallets:read` | Addresses → detail | `WADR-030` |
@@ -61,7 +61,7 @@ changes.
 
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
-| GET | `/api/v1/ipn/consumers` | `orders:read` | Webhooks → consumers | `WIPN-010` |
+| GET | `/api/v1/ipn/consumers` | `orders:read` | Webhooks → consumers; Orders → create form (consumer picker) | `WIPN-010`, `WORD-032` |
 | GET | `/api/v1/ipn/dead` | `orders:read` | Webhooks → dead letters | `WIPN-030` |
 | POST | `/api/v1/ipn/{id}/retry` | `orders:write` | Webhooks → dead letters | `WIPN-035` |
 | POST | `/api/v1/ipn/test` | `orders:write` | Webhooks → consumers | `WIPN-020` |
@@ -71,10 +71,10 @@ changes.
 
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
-| GET | `/api/v1/chain/status` | `wallets:read` | Overview → chain card | `WOVW-020` |
-| GET | `/api/v1/chain/quota` | `wallets:read` | Overview → quota card; System → quota tab | `WOVW-030`, `WSYS-010` |
-| GET | `/api/v1/chain/params` | `wallets:read` | Resources → chain params card | `WRES-010` |
-| GET | `/api/v1/resources/wallet` | `wallets:read` | Resources → resource wallet; delegate dialog | `WRES-020`, `WADR-052` |
+| GET | `/api/v1/chain/status` | `wallets:read` | Overview → chain card; System → health tab | `WOVW-020`, `WSYS-061` |
+| GET | `/api/v1/chain/quota` | `wallets:read` | Overview → quota card; System → quota tab, health tab | `WOVW-030`, `WSYS-010`, `WSYS-061` |
+| GET | `/api/v1/chain/params` | `wallets:read` | Resources → chain params card; Overview → readiness card | `WRES-010`, `WOVW-012` |
+| GET | `/api/v1/resources/wallet` | `wallets:read` | Resources → resource wallet; delegate dialog; Addresses → pool list (resource-wallet row) | `WRES-020`, `WADR-052`, `WADR-005` |
 | GET | `/api/v1/resources/grants` | `wallets:read` | Resources → grants | `WRES-040` |
 | GET | `/api/v1/energy/status` | `wallets:read` | Resources → provider card | `WRES-001` |
 | GET | `/api/v1/energy/purchases` | `wallets:read` | Resources → purchases | `WRES-030` |
@@ -83,7 +83,7 @@ changes.
 
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
-| GET | `/api/v1/reports/volume` | `orders:read` | Reports → volume | `WRPT-001` |
+| GET | `/api/v1/reports/volume` | `orders:read` | Reports → volume; Overview → volume card | `WRPT-001`, `WOVW-052` |
 | GET | `/api/v1/reports/fees` | `wallets:read` | Reports → fees; Resources → cost split | `WRPT-020`, `WRES-050` |
 | GET | `/api/v1/export/orders.csv` | `orders:read` | Reports; Orders → export | `WRPT-030` |
 | GET | `/api/v1/export/withdrawals.csv` | `withdrawals:read` | Reports; Withdrawals → export | `WRPT-030` |
@@ -92,7 +92,7 @@ changes.
 
 | Method | Path | Scope | Page | Spec |
 |---|---|---|---|---|
-| GET | `/api/v1/stats` | any key | Overview → volume card | `WOVW-052` |
+| GET | `/api/v1/stats` | any key | Overview → alarms strip, nav-shell alarm counters; Addresses → pool health | `WOVW-004`, `UI-071`, `WADR-008a` |
 | GET | `/api/v1/prices` | any key | Overview → prices card | `WOVW-050` |
 | GET | `/api/v1/assets` | any key | System → assets; every amount input | `WSYS-030` |
 | GET | `/api/v1/auth/whoami` | any key | System → session; startup scope check | `WSYS-050`, `AUTH-030` |

@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+
+    --surface-canvas: #080a0d;
+    --surface-panel: #0d1117;
+    --surface-raised: #141a22;
+    --surface-inset: #06080b;
+    --border-subtle: #252c36;
+    --border-strong: #3a4554;
+    --text-primary: #e8edf2;
+    --text-secondary: #aab5c2;
+    --text-faint: #6f7a88;
+    --focus-ring: #84c5ff;
+
+    /* Severity is semantic: never use these colours as entity identifiers. */
+    --severity-neutral: #aab5c2;
+    --severity-neutral-bg: #1a212b;
+    --severity-progress: #65b7ff;
+    --severity-progress-bg: #10263b;
+    --severity-success: #59c58b;
+    --severity-success-bg: #10291e;
+    --severity-muted: #778291;
+    --severity-muted-bg: #191e25;
+    --severity-warning: #f4c15d;
+    --severity-warning-bg: #342810;
+    --severity-critical: #ff6675;
+    --severity-critical-bg: #3a1119;
+    --severity-critical-salience: #ffd6db;
+    --severity-critical-ring: #ff4054;
+  }
+
+  * {
+    box-sizing: border-box;
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    min-width: 320px;
+    background: var(--surface-canvas);
+  }
+
+  body {
+    min-height: 100vh;
+    margin: 0;
+    background: var(--surface-canvas);
+    color: var(--text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  :where(.font-mono, [data-financial-value], [data-address], [data-txid], [data-entity-id]) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 1.5rem;
+    padding: 0.125rem 0.5rem;
+    border: 1px solid currentColor;
+    border-radius: 0.1875rem;
+    font-size: 0.75rem;
+    font-weight: 650;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .status-badge[data-severity="neutral"] { color: var(--severity-neutral); background: var(--severity-neutral-bg); }
+  .status-badge[data-severity="progress"] { color: var(--severity-progress); background: var(--severity-progress-bg); }
+  .status-badge[data-severity="success"] { color: var(--severity-success); background: var(--severity-success-bg); }
+  .status-badge[data-severity="muted"] { color: var(--severity-muted); background: var(--severity-muted-bg); }
+  .status-badge[data-severity="warning"] { color: var(--severity-warning); background: var(--severity-warning-bg); }
+  .status-badge[data-severity="critical"] { color: var(--severity-critical); background: var(--severity-critical-bg); }
+
+  /* The icon is deliberately textual: it survives monochrome incident screenshots. */
+  .status-badge[data-severity="warning"]::before { content: "!"; }
+  .status-badge[data-severity="critical"]::before { content: "!!"; }
+
+  .needs-operator {
+    color: var(--severity-critical-salience);
+    background: var(--severity-critical-bg);
+    border: 2px solid var(--severity-critical-ring);
+    box-shadow: 0 0 0 1px var(--surface-canvas), 0 0 0 3px var(--severity-critical-ring);
+  }
+
+  .alarm-counter[data-severity="critical"] {
+    color: var(--severity-critical-salience);
+    border-color: var(--severity-critical-ring);
+    background: var(--severity-critical-bg);
+  }
+
+  .alarm-counter[data-count="0"] {
+    color: var(--text-faint);
+  }
+}

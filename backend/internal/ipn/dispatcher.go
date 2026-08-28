@@ -101,8 +101,11 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	group.Wait()
 }
 
+// TickInterval is how often each dispatch goroutine looks for work (W-004).
+const TickInterval = time.Second
+
 func (d *Dispatcher) runWorker(ctx context.Context) {
-	ticker := time.NewTicker(time.Second) // W-004
+	ticker := time.NewTicker(TickInterval) // W-004
 	defer ticker.Stop()
 	for {
 		delivered, err := d.DispatchOne(ctx)

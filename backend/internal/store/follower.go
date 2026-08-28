@@ -72,6 +72,9 @@ type PaymentRecord struct {
 	IsDust         bool
 	Status         string
 	DetectedAt     int64
+	// UnattributedReason names which of the three ORD-020 conditions failed, as
+	// judged at match time. Empty for attributed payments.
+	UnattributedReason string
 }
 
 type AttributionOrder struct {
@@ -288,17 +291,18 @@ func (w *BlockWrite) UpsertPayment(payment PaymentRecord) (bool, error) {
 	_, err = w.tx.Exec(`INSERT INTO payments(
         txid, log_index, direction, block_height, block_id, block_timestamp,
         from_address, to_address, address_id, order_id, asset, amount_raw,
-        is_dust, status, detected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_dust, status, detected_at, unattributed_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (txid, log_index) DO UPDATE SET
           block_height = excluded.block_height,
           block_id = excluded.block_id,
           block_timestamp = excluded.block_timestamp,
           status = CASE WHEN payments.status = 'orphaned' THEN excluded.status ELSE payments.status END,
-          detected_at = COALESCE(payments.detected_at, excluded.detected_at)`,
+          detected_at = COALESCE(payments.detected_at, excluded.detected_at),
+          unattributed_reason = excluded.unattributed_reason`,
 		payment.TxID, payment.LogIndex, payment.Direction, payment.BlockHeight, payment.BlockID, payment.BlockTimestamp,
 		payment.FromAddress, payment.ToAddress, payment.AddressID, payment.OrderID, payment.Asset, payment.AmountRaw,
-		payment.IsDust, status, payment.DetectedAt)
+		payment.IsDust, status, payment.DetectedAt, sql.NullString{String: payment.UnattributedReason, Valid: payment.UnattributedReason != ""})
 	if err != nil {
 		return false, fmt.Errorf("upsert payment %s/%d: %w", payment.TxID, payment.LogIndex, err)
 	}

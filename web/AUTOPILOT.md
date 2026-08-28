@@ -1,21 +1,19 @@
 # Autopilot — autonomous build of the payd dashboard
 
-One prompt. Paste it once into Codex CLI at the repo root. It runs all four
-phases end to end: decomposes each phase into tasks, spawns a sub-agent per
-task with the brief injected automatically, validates every result, remediates
-failures, verifies gates, and moves on. It stops only when the project is done
-or a halt condition fires.
+One prompt, run inside Claude Code at the repo root. The orchestrator is the
+Claude Code session itself; it runs all four phases end to end: decomposes
+each phase into tasks, spawns a sub-agent per task via the Agent tool with the
+brief injected as the prompt, validates every result, remediates failures,
+verifies gates, and moves on. It stops only when the project is done or a
+halt condition fires.
 
 Manual, human-gated alternative: `web/Roadmap.md`.
 
 ## Before you paste
 
 1. `cd C:\Users\root\Desktop\tron-payment-proccesor`
-2. `codex exec --help` — confirm the flags in §2 of the prompt match your
-   version. If `--full-auto` is named differently, tell the orchestrator the
-   correct invocation in one line appended to the prompt.
-3. Commit or stash anything you care about. The run writes a lot.
-4. `git checkout -b web-autopilot` — it works on a branch.
+2. Commit or stash anything you care about. The run writes a lot.
+3. `git checkout -b web-autopilot` — it works on a branch.
 
 ## The prompt
 
@@ -57,17 +55,36 @@ validation you perform.
 §2  HOW YOU SPAWN A SUB-AGENT
 ═══════════════════════════════════════════════════════════════════════
 
-A sub-agent is a separate non-interactive Codex process. You spawn one by
-writing its brief to a file and executing it:
+A sub-agent is a Claude Code Agent-tool call, not a separate CLI process. You
+spawn one by writing its brief and invoking the Agent tool with that brief as
+the prompt:
 
   1. Write the brief:      web/.codex/briefs/<task-id>.md
-  2. Spawn:                codex exec --full-auto "$(cat web/.codex/briefs/<task-id>.md)" 2>&1 | tee web/.codex/logs/<task-id>.log
-  3. Read the log and the resulting git diff. Never trust the log alone —
-     a sub-agent claiming success is a claim, not evidence.
+  2. Spawn — call the Agent tool with:
+       - `prompt`: the full brief text (read the file back and pass its
+         content verbatim; do not summarize or paraphrase it)
+       - `subagent_type`: `general-purpose` for SCAFFOLD, PLATFORM, DESIGN,
+         and PAGE roles (needs Read/Write/Edit/Bash/Grep/Glob to build code);
+         `Explore` for AUDITOR roles (read-only tools — it structurally
+         cannot write code, which backs up the brief's own "write no code"
+         instruction with a tool restriction, not just wording)
+       - `description`: the task-id and a few words, e.g. "23-reports PAGE build"
+       - `run_in_background`: `false` — you need the result before you can
+         validate and decide what to spawn next; there is no parallel work to
+         do while it runs, since §2's own rule below forbids parallel spawns
+       - `isolation`: omit. The sub-agent works directly in this checkout, the
+         same as every task before it — there is no worktree isolation in this
+         run.
+  3. When the Agent tool returns, write its full final report to
+     `web/.codex/logs/<task-id>.log` yourself (the tool does not write a log
+     file on its own; you are the one creating the audit trail). Then read the
+     resulting `git diff`. Never trust the report alone: a sub-agent claiming
+     success is a claim, not evidence.
 
-If `codex exec --full-auto` is not the correct invocation in this environment,
-determine the right one with `codex exec --help` on your first spawn and use it
-consistently thereafter. Record the working invocation in the ledger.
+  A sub-agent's final report is returned as one message, not streamed to a
+  file you could tail — you see the whole thing. If it is unusually long,
+  skim for the REPORT AT THE END section (files changed, requirement IDs,
+  what it could not do) rather than reading every intermediate step it narrates.
 
 Rules:
   - ONE SUB-AGENT AT A TIME. No parallel spawns. Two agents writing the same
@@ -90,7 +107,7 @@ about progress, not your memory.
 Format:
 
   # Autopilot ledger
-  spawn-invocation: codex exec --full-auto "$(cat FILE)"
+  spawn-invocation: Agent tool, subagent_type=general-purpose (SCAFFOLD/PLATFORM/DESIGN/PAGE) or Explore (AUDITOR), run_in_background=false, prompt=brief file content
   current-phase: WP1
   
   | task-id | role | status | attempts | notes |
@@ -130,6 +147,14 @@ READ FIRST, FULLY:
 
 YOU MAY CREATE OR MODIFY ONLY THESE PATHS:
   <exact files or folders>
+  PLUS, whenever your change requires it, the build configuration:
+    web/package.json, web/tsconfig.json, web/next.config.mjs,
+    web/postcss.config.*, web/tailwind.config.*, web/components.json
+  If you change the module format, the compiler target, or the toolchain in
+  ANY of those, you MUST bring the others into agreement in the same task and
+  prove it with a passing `npm run build`. Changing `"type"` in package.json
+  without converting every CommonJS config file is the specific failure this
+  clause exists to prevent.
 Everything else belongs to another agent. If you need a change outside this
 list, STOP and report it instead of making it.
 
@@ -196,13 +221,11 @@ page agent did.
   02-types         PLATFORM  Types + Zod schemas derived from openapi.yaml
                              (WST-014). lib/payd/types.ts, schemas.ts.
                              Specs: 02, 05.
-  03-proxy         PLATFORM  BFF catch-all proxy, allowlist derived from
-                             openapi.yaml, error envelope passthrough, NO
-                             RETRY ON POST, streaming for CSV.
-                             Specs: 03 (all). IDs: BFF-001..BFF-043.
-  04-session       PLATFORM  Login page, Argon2id password, session TOTP,
-                             signed httpOnly cookie, CSRF, route-group guard.
-                             Specs: 04. IDs: AUTH-001..AUTH-052.
+  03-auth-foundation PLATFORM  Signed/encrypted session, login/logout,
+                             session TOTP, CSRF, authenticated BFF proxy,
+                             OpenAPI-derived allowlist, and `whoami` bootstrap.
+                             Specs: 03, 04. IDs: BFF-001..BFF-043,
+                             AUTH-001..AUTH-052.
   05-query         PLATFORM  Query client (retry:false globally), key factory,
                              polling tiers, 429 backoff, error mapping.
                              Specs: 05. IDs: DAT-001..DAT-044.
@@ -286,11 +309,18 @@ page agent did.
 
 §6.1 Mechanical checks (all must pass)
 
-  npx tsc --noEmit
+  ./node_modules/.bin/tsc --noEmit     # NOT `npx tsc` — see below
   npm run lint
   npm run build
   git diff --stat                      # scope: did it touch only its allowed paths?
   git status --porcelain backend/      # MUST be empty. Non-empty = HALT.
+
+  `npx tsc` may resolve to a different, older TypeScript than the project's own
+  and report errors that do not exist — typically `TS5023 Unknown compiler
+  option` or `TS6046` against a `tsconfig.json` that is perfectly valid. Always
+  use the local binary. `next build` already uses the local compiler. If a
+  tsconfig error appears under `npx` but not under `./node_modules/.bin/tsc`,
+  the tsconfig is fine and the tooling is not — do NOT "fix" the tsconfig.
 
 §6.2 Invariant greps (run after every task, not just at gates)
 
@@ -311,8 +341,12 @@ page agent did.
   grep -ri "PAYD_API_KEY\|X-API-Key\|SESSION_SECRET\|DASH_TOTP" web/.next/static/
     → any hit = FAIL, immediately, and HALT.
 
-  grep -rn "NEXT_PUBLIC_" web/
-    → any variable naming a key, secret, hash, or backend URL = FAIL.
+  grep -rn "NEXT_PUBLIC_" web/ --include=*.ts --include=*.tsx --include=*.mjs
+    → ANY `NEXT_PUBLIC_` variable in code = FAIL (WST-020). The ban is absolute,
+      not "no secrets": deciding per variable whether one is safe to expose is a
+      judgement call, and this grep has no judgement in it. Values the browser
+      legitimately needs are read server-side and passed down from a server
+      component — see TRONSCAN_BASE_URL. Matches in prose or comments are fine.
 
 §6.3 Gate verification (at each WP*-GATE task)
 
@@ -326,17 +360,72 @@ FAIL. Write every gate result into the ledger's gate log.
 
 §6.4 On failure
 
-  1. Increment the task's attempt count in the ledger.
-  2. Write a REMEDIATION brief: the original brief, plus a FAILURES section
-     listing each failure with its exact command output or file:line.
-  3. Re-spawn the SAME role on the SAME file scope.
-  4. Re-validate from §6.1.
-  5. MAXIMUM 3 ATTEMPTS PER TASK. On the third failure: mark FAILED, record
-     everything in the ledger, and HALT (§8).
+FIRST, CLASSIFY THE FAILURE. Sending the wrong class to a sub-agent wastes the
+attempt budget on something the sub-agent is scoped out of fixing.
 
-Never work around a sub-agent's failure by writing the code yourself, except
-for pure integration breakage (an import path, a type mismatch between two
-agents' outputs). Correctness failures go back to the owning agent.
+  INTEGRATION BREAKAGE — the task's own logic is correct; two agents' outputs
+  or the toolchain disagree. YOU FIX THIS YOURSELF, IMMEDIATELY, and it does
+  NOT consume an attempt. Log the fix in the ledger. Symptoms:
+    - a module-format mismatch: `module is not defined in ES module scope`,
+      `Cannot use import statement outside a module`, `require is not defined`
+    - a config file left in a format the toolchain no longer accepts after a
+      `package.json` `"type"`, `module`, or `target` change
+    - a wrong import path, a missing export, a type mismatch between two
+      agents' files
+    - a tooling resolution problem rather than a code problem — e.g. `npx tsc`
+      resolving to a different TypeScript than the local one. Prefer
+      `./node_modules/.bin/tsc --noEmit`; `next build` already uses the local
+      compiler
+    - a missing dev-time script or a broken build wiring
+
+  TYPE-ONLY ERROR — a TypeScript diagnostic in an agent's own output where the
+  fix is purely at the type level and changes nothing at runtime. YOU FIX THIS
+  YOURSELF and it does NOT consume an attempt. A one-line narrowing that takes
+  an agent three rewrites is a waste of the budget, and each rewrite risks
+  losing a requirement the agent already satisfied.
+
+  This applies ONLY when ALL of the following hold. If any one fails, it is a
+  correctness failure and goes back to the agent:
+    - the ONLY failure is the TypeScript diagnostic. No invariant grep hit
+      (§6.2), no failing test, no unmet requirement ID, no build failure from
+      another cause.
+    - the fix is type-level: a narrowing guard, a type annotation, a generic
+      argument, an interface widening, or an assertion — and the emitted
+      JavaScript is equivalent.
+    - the fix is small enough to read at a glance: roughly 5 lines or fewer.
+    - it does NOT delete or weaken a runtime check, change a comparison or a
+      default, alter a header, status code, URL, or request body, remove or
+      rename a field, change control flow, or add or remove a `retry`.
+    - it does NOT touch withdrawal, session, proxy-authentication, or
+      TOTP-handling behaviour. Those go back to the owning agent regardless of
+      how small the diff looks — a type fix on a fund-moving path is exactly
+      where a behaviour change hides.
+  After fixing: re-run the FULL §6.1 and §6.2, and record the diff VERBATIM in
+  the ledger. If the fix would need more than the above, stop and re-spawn — a
+  type error that cannot be fixed at the type level is a design problem the
+  agent owns.
+
+  Do NOT classify as integration breakage or as a type-only error anything that
+  changes behaviour, removes a check, or touches an invariant. Those are
+  correctness failures.
+
+  CORRECTNESS FAILURE — the task did not do what its requirement IDs say, or an
+  invariant grep in §6.2 hits. THIS GOES BACK TO THE OWNING AGENT:
+    1. Increment the task's attempt count in the ledger.
+    2. Write a REMEDIATION brief: the original brief, plus a FAILURES section
+       listing each failure with its exact command output or file:line.
+    3. Re-spawn the SAME role on the SAME file scope.
+    4. Re-validate from §6.1.
+    5. MAXIMUM 3 ATTEMPTS PER TASK. On the third failure: mark FAILED, record
+       everything in the ledger, and HALT (§8).
+
+  A FAILURE A SUB-AGENT CANNOT REACH is never a correctness failure. If the fix
+  lies outside the agent's allowed paths, re-spawning it cannot succeed and
+  will burn the budget. Either fix it yourself as integration breakage, or
+  widen the allowed paths and re-spawn — but only if the widened scope cannot
+  collide with another agent's files.
+
+Never resolve a correctness failure by writing the code yourself.
 
 ═══════════════════════════════════════════════════════════════════════
 §7  DESIGN BRIEF — inject verbatim into every DESIGN brief, and into any
@@ -386,8 +475,8 @@ honesty about state.
       CHANGE REQUEST, never a client-side workaround (WP-001).
   H6  A task requires a runtime dependency outside the WST-001 budget.
   H7  An invariant grep in §6.2 fails and remediation does not clear it.
-  H8  `codex exec` cannot be invoked successfully after you have tried the
-      alternatives from `codex exec --help`.
+  H8  The Agent tool fails to return a result for a spawn (tool error, not a
+      sub-agent reporting failure — that is a normal §6.4 correctness failure).
   H9  The git working tree contains changes you did not initiate.
 
 On halt: write the reason, the failing evidence, the ledger state, and the exact
@@ -423,9 +512,8 @@ cost money.
 
   1. Read web/.codex/LEDGER.md. If it exists, resume from the first non-DONE
      task and say which one.
-  2. If it does not exist, read every file in §1, create the ledger with the
-     full task graph as PENDING, and confirm the working `codex exec`
-     invocation.
+  2. If it does not exist, read every file in §1 and create the ledger with
+     the full task graph as PENDING.
   3. Begin task 01-scaffold.
   4. Continue until FINAL or a halt condition. Do not ask for approval between
      tasks or between phases.
@@ -436,15 +524,15 @@ cost money.
 | Watch | Command |
 |---|---|
 | Progress | `cat web/.codex/LEDGER.md` |
-| A specific agent's work | `cat web/.codex/logs/<task-id>.log` |
+| A specific agent's work | `cat web/.codex/logs/<task-id>.log` (written by the orchestrator after each spawn returns, not by the sub-agent itself) |
 | Whether it halted | `cat web/.codex/HALT.md` |
 | Backend untouched | `git status --porcelain backend/` — must stay empty |
 
 ## If it halts
 
 `web/.codex/HALT.md` carries the reason, the evidence, and the next action.
-Fix that one thing, then paste the same prompt again — §10 resumes from the
-ledger rather than restarting.
+Fix that one thing, then tell the orchestrator to continue — §10 resumes from
+the ledger rather than restarting.
 
 ## After WP3
 

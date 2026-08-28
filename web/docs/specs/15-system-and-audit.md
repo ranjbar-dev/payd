@@ -40,7 +40,8 @@ something is wrong, not one you watch.
 
 | ID | Requirement |
 |---|---|
-| WSYS-020 | The config tab MUST render `GET /config` as a read-only, grouped view: assets, withdrawal settings, chain depths, order TTL, energy enabled, consumer names |
+| WSYS-020 | The config tab MUST render `GET /config` as a read-only, grouped view: assets, withdrawal settings, chain depths, order TTL, energy settings (`enabled`, `max_burn_trx`, `balance_warn_trx`), `price.stale_after_seconds`, wallet pool settings (`pool_min_free`, `pool_max_size`, `cooldown_seconds`), and consumer names |
+| WSYS-020a | `/config` is the single source for every operator threshold the dashboard displays. It MUST be fetched once per session and cached (`WOVW-060`), and no page MAY hardcode any of these values as a fallback. A default that disagrees with the operator's YAML is worse than no figure, because it looks authoritative (`INV-5`) |
 | WSYS-021 | It MUST be clearly marked read-only, with the note that configuration changes are a YAML edit and a restart (`WNG-006`) |
 | WSYS-022 | The UI MUST render only what the endpoint returns. Backend `API-043` allowlists the fields precisely so no endpoint/API/TOTP/key-hash/consumer credential can appear (backend `CFG-011`); the UI MUST NOT add a field, infer one, or request more |
 | WSYS-023 | Values that other pages depend on MUST link back to them: `pool_max_size` to addresses, `daily_limit_usd` to withdrawals, `max_burn_trx` to resources, consumer names to webhooks |

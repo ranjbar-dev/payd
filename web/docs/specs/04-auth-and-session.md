@@ -52,7 +52,7 @@ first and repeated in the UI.
 
 | ID | Requirement |
 |---|---|
-| AUTH-030 | On session creation, the server MUST call `GET /auth/whoami` and cache the key name and scopes for the session's lifetime |
+| AUTH-030 | On session creation, the server MUST call `GET /auth/whoami` and cache the key name and scopes for the session's lifetime. The ordering is fixed by `BFF-013`: create the session, call whoami in process with that session's cookie, and invalidate the session before emitting any `Set-Cookie` if the call fails. A login MUST NOT succeed with an unverified key |
 | AUTH-031 | The System page MUST display the key name and its sorted scopes verbatim from `/auth/whoami` |
 | AUTH-032 | A UI control whose backend route requires a scope the key lacks MUST be rendered disabled with the missing scope named in its tooltip, not hidden. A hidden control makes a misconfigured key look like a missing feature |
 | AUTH-033 | If `/auth/whoami` reports missing scopes, a persistent banner MUST name each missing scope and the pages it disables (`WST-023`) |

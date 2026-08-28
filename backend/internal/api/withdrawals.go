@@ -309,7 +309,24 @@ func (s *Server) estimateWithdrawal(w http.ResponseWriter, r *http.Request) {
 	if resources.BlockedBy != "" {
 		blockedBy = append(blockedBy, resources.BlockedBy)
 	}
+	// UI-060/WWD-070: echo what THIS SERVICE understood the request to be, so a
+	// confirmation screen can restate the transfer from the response instead of from
+	// the operator's own inputs. `amount` is re-formatted from the parsed base units
+	// rather than copied from the request, so an amount the parser normalised is
+	// visible before anyone types a TOTP code — the operator confirms the transfer
+	// that would actually go out, not the one they believe they typed.
+	echoedAmount, formatErr := store.FormatUnits(raw.String(), decimals)
+	if formatErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "parsed amount is invalid", nil)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"from_address": request.FromAddress,
+		"to_address":   request.ToAddress,
+		"asset":        request.Asset,
+		"amount":       echoedAmount,
+		"amount_raw":   raw.String(),
+		"amount_usd":   amountUSDValue,
 		// can_proceed is the single field a caller should gate on: the per-condition flags each
 		// answer only their own question, so checking one in isolation misses the others.
 		"can_proceed":                  len(blockedBy) == 0,
@@ -334,7 +351,13 @@ func (s *Server) withdrawalJSON(withdrawal store.Withdrawal) map[string]any {
 		"energy_source": withdrawal.EnergySource, "energy_cost_trx": zeroIfEmpty(withdrawal.EnergyCostTRX),
 		"bandwidth_source": withdrawal.BandwidthSource, "bandwidth_cost_trx": bandwidthCost,
 		"resource_fee_trx": resourceFee, "total_cost_trx": totalCost, "last_lookup_error": withdrawal.LastLookupError,
-		"created_at": withdrawal.CreatedAt, "broadcast_at": withdrawal.BroadcastAt, "confirmed_at": withdrawal.ConfirmedAt}
+		"created_at": withdrawal.CreatedAt,
+		// WWD-012: when the row entered its current status, so time-in-state is
+		// readable. `awaiting_energy` is bounded by the energy poll timeout, and one
+		// sitting there for ten minutes is a fault — which cannot be seen against
+		// created_at alone.
+		"status_updated_at": withdrawal.StatusUpdatedAt,
+		"broadcast_at":      withdrawal.BroadcastAt, "confirmed_at": withdrawal.ConfirmedAt}
 }
 
 // WDR-025: withdrawalCosts keeps on-chain fees in base units until the final format.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
@@ -31,6 +32,10 @@ func (s *Server) listDeadIPN(w http.ResponseWriter, r *http.Request) {
 			"id": event.ID, "order_id": event.OrderID, "consumer": event.Consumer,
 			"event_type": event.EventType, "attempts": event.Attempts, "last_error": event.LastError,
 			"last_status_code": event.LastStatusCode, "created_at": event.CreatedAt,
+			// WIPN-031: the body as composed when the event was queued, so an operator
+			// can see exactly what a redelivery would send. It is a snapshot and may
+			// contradict the order's current state (WIPN-033).
+			"payload": json.RawMessage(event.Payload),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": items, "next_cursor": next})

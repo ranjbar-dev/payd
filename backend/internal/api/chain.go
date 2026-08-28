@@ -7,7 +7,22 @@ import (
 	"math/big"
 	"net/http"
 	"time"
+
+	"payd/internal/energy"
+	"payd/internal/store"
 )
+
+// burnExceedsCeiling compares the worst-case burn against the configured ceiling.
+// The second return is false when either figure is absent or unparsable: an
+// unknown comparison must render as unknown, never as "within limits".
+func burnExceedsCeiling(burn, ceiling string) (bool, bool) {
+	have, ok := new(big.Rat).SetString(burn)
+	limit, limitOK := new(big.Rat).SetString(ceiling)
+	if !ok || !limitOK {
+		return false, false
+	}
+	return have.Cmp(limit) > 0, true
+}
 
 func (s *Server) chainParameters(w http.ResponseWriter, r *http.Request) {
 	params, err := s.store.LoadChainParameters(r.Context())
@@ -20,10 +35,31 @@ func (s *Server) chainParameters(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	s.mu.RLock()
+	minEnergy, maxBurnTRX := s.resources.MinEnergy, s.energy.MaxBurnTRX
+	s.mu.RUnlock()
+	// WRES-012/WRES-015: the worst-case burn and its verdict against the configured
+	// ceiling are computed here, from the fee that was actually read, because both
+	// are money. A client deriving them would be doing decimal arithmetic on a cost
+	// (INV-2) and duplicating a rule the engine already owns (ENR-017): a ceiling
+	// set below the real burn silently disables the fallback of last resort, and
+	// that is only visible if the two figures are compared by whoever holds both.
+	burnSun := energy.BurnCostSun(minEnergy, params.EnergyFee)
+	worstCaseBurn, err := store.FormatUnits(burnSun.String(), 6)
+	if err != nil {
+		s.logger.Error("format worst case burn", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+		return
+	}
+	body := map[string]any{
 		"getEnergyFee": params.EnergyFee, "getTransactionFee": params.TransactionFee,
 		"fetched_at": params.FetchedAt, "stale": time.Since(time.Unix(params.FetchedAt, 0)) > 6*time.Hour,
-	})
+		"worst_case_burn_trx": worstCaseBurn, "max_burn_trx": maxBurnTRX,
+	}
+	if exceeds, ok := burnExceedsCeiling(worstCaseBurn, maxBurnTRX); ok {
+		body["burn_exceeds_ceiling"] = exceeds
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) chainStatus(w http.ResponseWriter, r *http.Request) {

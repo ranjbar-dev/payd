@@ -42,12 +42,18 @@ func New(database *store.Store, pool *wallet.Pool, cooldown time.Duration, logge
 	return &Worker{store: database, pool: pool, cooldown: cooldown, logger: logger, events: events, now: time.Now}, nil
 }
 
+// Tick cadences for the two clock-driven loops (LIF-001..LIF-004).
+const (
+	ShortInterval = 10 * time.Second
+	LongInterval  = time.Minute
+)
+
 // Run has no network client by construction; every operation is local derivation or store I/O (LIF-005).
 func (w *Worker) Run(ctx context.Context) {
 	w.tick10(ctx)
 	w.tick60(ctx)
-	short := time.NewTicker(10 * time.Second)
-	long := time.NewTicker(time.Minute)
+	short := time.NewTicker(ShortInterval)
+	long := time.NewTicker(LongInterval)
 	defer short.Stop()
 	defer long.Stop()
 	for {

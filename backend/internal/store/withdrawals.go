@@ -26,7 +26,11 @@ type Withdrawal struct {
 	EnergyGrantFeeRaw, BandwidthGrantFeeRaw                              string
 	FailureReason, ResolvedBy, RequestedBy, RequestedIP, LastLookupError string
 	AddressID, CreatedAt                                                 int64
-	HDIndex                                                              uint32
+	// StatusUpdatedAt is when the row entered its current status. Every status
+	// write sets it, so time-in-state is a stored fact rather than something a
+	// reader has to guess from created_at.
+	StatusUpdatedAt int64
+	HDIndex         uint32
 	EnergyUsed, LookupFailures                                           int64
 	BroadcastAttemptedAt, ExpirationAt, LastLookupAt                     *int64
 	BroadcastAt, ConfirmedAt                                             *int64
@@ -43,7 +47,7 @@ const withdrawalSelect = `SELECT w.id, w.idempotency_key, w.address_id, a.hd_ind
     w.broadcast_attempted_at, COALESCE(w.broadcast_response,''), COALESCE(w.fee_raw,''),
     COALESCE(w.energy_used,0), COALESCE(w.energy_source,''), COALESCE(w.energy_cost_trx,''),
     COALESCE(w.bandwidth_source,''), COALESCE(w.failure_reason,''), COALESCE(w.resolved_by,''),
-    w.requested_by, w.created_at, w.broadcast_at, w.confirmed_at, w.expiration_at,
+    w.requested_by, w.created_at, w.status_updated_at, w.broadcast_at, w.confirmed_at, w.expiration_at,
 	w.last_lookup_at, w.lookup_failures, COALESCE(w.last_lookup_error,''), COALESCE(w.requested_ip,''),
 	COALESCE((SELECT fee_raw FROM resource_grants WHERE withdrawal_id=w.id AND resource_type='ENERGY'),''),
 	COALESCE((SELECT fee_raw FROM resource_grants WHERE withdrawal_id=w.id AND resource_type='BANDWIDTH'),'')
@@ -55,7 +59,7 @@ func scanWithdrawal(row rowScanner) (Withdrawal, error) {
 	err := row.Scan(&w.ID, &w.IdempotencyKey, &w.AddressID, &w.HDIndex, &w.FromAddress, &w.ToAddress,
 		&w.Asset, &w.AmountRaw, &w.AmountUSD, &w.Status, &w.TxID, &attempted, &w.BroadcastResponse,
 		&w.FeeRaw, &w.EnergyUsed, &w.EnergySource, &w.EnergyCostTRX, &w.BandwidthSource,
-		&w.FailureReason, &w.ResolvedBy, &w.RequestedBy, &w.CreatedAt, &broadcastAt, &confirmedAt,
+		&w.FailureReason, &w.ResolvedBy, &w.RequestedBy, &w.CreatedAt, &w.StatusUpdatedAt, &broadcastAt, &confirmedAt,
 		&expirationAt, &lookupAt, &w.LookupFailures, &w.LastLookupError, &w.RequestedIP,
 		&w.EnergyGrantFeeRaw, &w.BandwidthGrantFeeRaw)
 	setNullable := func(value sql.NullInt64, target **int64) {

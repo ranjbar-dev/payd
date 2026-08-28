@@ -78,8 +78,13 @@ func (s *Store) EnergyProviderStatus(ctx context.Context, provider string) (Ener
 	return status, rows.Err()
 }
 
-func (s *Store) ListEnergyPurchases(ctx context.Context, after string, limit int) ([]EnergyPurchase, error) {
+// ListEnergyPurchases filters server-side: narrowing a cursor page in a client
+// describes the page rather than the purchase history (API-025, WRES-035).
+func (s *Store) ListEnergyPurchases(ctx context.Context, status, after string, limit int) ([]EnergyPurchase, error) {
 	query, args := energyPurchaseSelect+" WHERE 1=1", []any{}
+	if status != "" {
+		query, args = query+" AND status=?", append(args, status)
+	}
 	if after != "" {
 		query, args = query+" AND id>?", append(args, after)
 	}

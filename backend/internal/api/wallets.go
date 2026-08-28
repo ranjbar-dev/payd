@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -38,12 +39,19 @@ func (s *Server) writeWalletPage(w http.ResponseWriter, r *http.Request, withCon
 			return
 		}
 	}
-	var addresses []store.WalletAddress
-	if withConfirmedBalance {
-		addresses, err = s.store.WalletAddressesWithConfirmedBalancePage(r.Context(), after, limit+1)
-	} else {
-		addresses, err = s.store.WalletAddressPage(r.Context(), false, after, limit+1)
+	// API-014: filtered server-side. Narrowing a cursor page in the client would
+	// describe the loaded page rather than the pool.
+	filter := store.WalletFilter{
+		ConfirmedOnly: withConfirmedBalance,
+		State:         r.URL.Query().Get("state"),
+		Asset:         r.URL.Query().Get("asset"),
+		DriftOnly:     r.URL.Query().Get("drift") == "true",
 	}
+	if filter.State != "" && !slices.Contains([]string{"free", "assigned", "cooling", "disabled"}, filter.State) {
+		writeError(w, http.StatusBadRequest, "invalid_state", "state must be free, assigned, cooling or disabled", nil)
+		return
+	}
+	addresses, err := s.store.WalletAddressPageFiltered(r.Context(), filter, after, limit+1)
 	if err != nil {
 		s.logger.Error("list wallets", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error", nil)
@@ -253,7 +261,11 @@ func (s *Server) walletJSON(address store.WalletAddress, view walletView) (map[s
 		if err != nil {
 			return nil, err
 		}
-		item := map[string]any{"asset": balance.Asset, "confirmed": confirmed, "pending": pending, "drift_detected": balance.Drift}
+		// WADR-021: confirmed_raw travels with chain_raw so drift can be read as a
+		// difference. Both are base units; comparing the formatted `confirmed`
+		// against `chain_raw` would compare two different scales.
+		item := map[string]any{"asset": balance.Asset, "confirmed": confirmed, "confirmed_raw": balance.ConfirmedRaw,
+			"pending": pending, "drift_detected": balance.Drift}
 		if balance.ChainRaw != nil {
 			item["chain_raw"] = *balance.ChainRaw
 		}
@@ -295,6 +307,10 @@ func (s *Server) walletJSON(address store.WalletAddress, view walletView) (map[s
 		"bandwidth":              map[string]any{"available": bandwidthAvailable, "limit": address.BandwidthLimit, "required": view.resources.MinBandwidth, "sufficient": bandwidthSufficient},
 		"trx_for_bandwidth_burn": trxForBandwidth, "can_withdraw": canWithdraw,
 		"blocked_by": blocked, "drift_detected": drift, "needs_resources": address.NeedsResources,
+		// POOL-004/POOL-005: which order still holds this address, and until when it
+		// stays out of rotation. Without these a cooling address is indistinguishable
+		// from a free one that simply has not been reassigned yet.
+		"cooling_until": address.CoolingUntil, "assigned_order_id": address.AssignedOrderID,
 	}
 	if address.ResourcesCheckedAt != nil {
 		item["checked_at"] = *address.ResourcesCheckedAt
