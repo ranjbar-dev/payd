@@ -30,3 +30,4 @@ coverage/
 .DS_Store
 Thumbs.db
 .playwright-mcp/
+web/.codex/skills/ui-ux-pro-max/scripts/__pycache__/
