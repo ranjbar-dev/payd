@@ -357,10 +357,17 @@ func (s *Server) rawFromUSD(ctx context.Context, asset, value string, decimals i
 	}
 	raw := new(big.Rat).Mul(usd, new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)))
 	raw.Quo(raw, assetPrice)
-	if !raw.IsInt() {
-		return nil, price.Quote{}, errors.New("USD amount does not resolve to a whole base unit")
+	// API-001: a USD amount is converted at the current price. The result rarely
+	// lands on a whole base unit for a non-stablecoin asset, so round up to the
+	// next base unit — the payer is never asked for less than the USD figure,
+	// and the overpay is at most one base unit (e.g. 0.000001 TRX). The price is
+	// snapshotted (PRC-006) so the valuation stays reproducible.
+	num, den := raw.Num(), raw.Denom()
+	rawUnits := new(big.Int).Quo(num, den)
+	if new(big.Int).Mul(rawUnits, den).Cmp(num) < 0 {
+		rawUnits.Add(rawUnits, big.NewInt(1))
 	}
-	return new(big.Int).Set(raw.Num()), quote, nil
+	return rawUnits, quote, nil
 }
 
 func (s *Server) writeOrderError(w http.ResponseWriter, err error) {

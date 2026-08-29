@@ -715,9 +715,11 @@ paths:
 
         **Amount.** Supply exactly one of `amount` (whole asset units) or `amount_usd`.
         Both or neither is 400 `invalid_order`. A USD amount is converted at the current
-        price and must land on a whole base unit, otherwise 400 `invalid_amount`. The
+        price and rounded up to the next whole base unit, so the payer is never asked
+        for less than the USD figure and the overpay is at most one base unit. The
         price and the time it was fetched are snapshotted onto the order, so later price
-        movement never changes what the payer owes.
+        movement never changes what the payer owes. 400 `invalid_amount` only when the
+        value is not a positive number.
 
         **Idempotency** is keyed on `external_ref`. Sending the same `external_ref` again
         returns the existing order with 200 — but only when `asset`, expected amount and
@@ -2125,9 +2127,8 @@ components:
           type: string
           description: >-
             What the payer must send, expressed in USD as a positive decimal string and
-            converted at the current price. The converted value must land on a whole base
-            unit of the asset, otherwise the request is rejected. Supply this or `amount`,
-            never both.
+            converted at the current price, then rounded up to the next whole base unit
+            of the asset. Supply this or `amount`, never both.
           example: '1.50'
         external_ref:
           type: string

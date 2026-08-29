@@ -1575,7 +1575,10 @@ func testConfig(poolSize int) config.Config {
 	return config.Config{
 		Wallet: config.Wallet{Account: 0, PoolInitialSize: poolSize, PoolMinFree: 1, PoolMaxSize: poolSize, Cooldown: time.Hour},
 		Tron:   config.Tron{ConfirmationsRequired: 19, ReorgDepth: 64, DailyRequestQuota: 100000},
-		Assets: []config.Asset{{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true}},
+		Assets: []config.Asset{
+			{Symbol: "USDT", Kind: "trc20", Decimals: 6, Verified: true},
+			{Symbol: "TRX", Kind: "native", Decimals: 6, Verified: true},
+		},
 		Orders: config.Orders{DefaultTTL: 30 * time.Minute},
 		IPN: config.IPN{DefaultConsumer: "shop", Timeout: time.Second, Consumers: []config.Consumer{
 			{Name: "shop", URL: "https://shop.invalid/ipn", Secret: "consumer-secret", ReceivesGlobal: true, Enabled: true},
