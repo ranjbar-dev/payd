@@ -2,6 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## How work is split — Claude plans, Codex codes
+
+**Claude Code owns the thinking. Codex CLI owns the typing.**
+
+- **Claude** does all of: understanding the request, reading the code and specs,
+  deciding the approach, breaking it into tasks, writing the exact task brief,
+  reviewing every diff against the invariants below, running the build/tests,
+  driving Playwright verification, committing, and reporting. Claude does **not**
+  hand-edit source files for feature work — small mechanical fixes to unblock a
+  build or a review are the only exception.
+- **Codex CLI** (`codex exec -m gpt-5.6-terra --approve-for-me -C <dir>`) does
+  the actual code changes, one bounded task at a time, from the brief Claude
+  writes. Run it non-interactively; **pass the prompt from a file**
+  (`"$(cat brief.txt)"`) — an inline heredoc hangs on stdin when backgrounded.
+  `--approve-for-me` can't be combined with `-s`.
+
+Every Codex brief must name: the files in scope, the spec/requirement IDs, what
+to change, and the non-negotiable invariants it must not break (see below and
+each subproject's `CLAUDE.md`). After Codex returns, Claude re-verifies with
+`node_modules/.bin/tsc --noEmit` + `npm run build` (Codex's own lint report is
+unreliable when runs overlap) and only then commits.
+
 ## What this is
 
 Self-hosted, single-tenant TRON payment processor. Two subprojects:
