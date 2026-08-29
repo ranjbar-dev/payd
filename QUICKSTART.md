@@ -271,6 +271,11 @@ node scripts/dev-auth.mjs session-secret                       # -> SESSION_SECR
 node scripts/dev-auth.mjs totp '<DASH_TOTP_SECRET>'            # current login code, any time
 ```
 
+The password you type into `hash` is what you log in with — **remember it**.
+This repo's local setup uses `12345678`. To change it later: re-run `hash` with
+the new password, paste the result into `DASH_PASSWORD_HASH` (keep the `\$`
+escaping), and restart `npm run dev`.
+
 Create `web/.env.local` — **escape every `$` as `\$`** (Next's env loader runs
 `dotenv-expand`, which otherwise eats the `$` in the Argon2id hash and login
 silently fails):
@@ -303,8 +308,19 @@ npm run dev        # http://localhost:3000
 
 Smoke test:
 1. Open `http://localhost:3000/` → it redirects to `/login`.
-2. Sign in with your dashboard password and a live code from
-   `node scripts/dev-auth.mjs totp '<DASH_TOTP_SECRET>'`.
+2. Sign in with the **dashboard password** you chose in §4 (this repo's local
+   setup uses `12345678`) and a live 6-digit code:
+
+   ```bash
+   # from web/ — reads DASH_TOTP_SECRET straight out of .env.local
+   node scripts/dev-auth.mjs totp "$(grep '^DASH_TOTP_SECRET=' .env.local | cut -d= -f2)"
+   ```
+
+   The login code comes from **`DASH_TOTP_SECRET`** (`web/.env.local`) — a
+   different secret from the backend's `auth.totp_secret` in
+   `backend/payd.nile.yaml`. Do **not** use `paydev.exe totp` or the backend
+   secret here; that pair is only for the withdrawal API and will fail login
+   with "invalid credentials".
 3. You land on the Overview page with live chain/quota/worker data.
 
 Create an order from **Orders → Create order**, then follow
