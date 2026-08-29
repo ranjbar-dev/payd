@@ -16,6 +16,7 @@ export function ConfirmDialog({
   onConfirm,
   requiresTotp = false,
   ready = true,
+  destructive = false,
   error,
 }: Readonly<{
   open: boolean;
@@ -26,6 +27,7 @@ export function ConfirmDialog({
   onConfirm: (totp: string) => Promise<ConfirmResult>;
   requiresTotp?: boolean;
   ready?: boolean;
+  destructive?: boolean;
   error?: { code: string; details?: { totp_consumed?: boolean } } | null;
 }>) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -76,7 +78,7 @@ export function ConfirmDialog({
   return (
     <dialog
       ref={dialog}
-      className="w-full max-w-lg border border-border-strong bg-panel p-0 text-ink backdrop:bg-black/70"
+      className="card z-50 w-full max-w-lg p-0 text-ink backdrop:bg-black/60"
       onCancel={(event) => {
         event.preventDefault();
         if (!submitting) onClose();
@@ -112,7 +114,7 @@ export function ConfirmDialog({
       <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
         <button
           type="button"
-          className="border border-border-strong px-3 py-2 hover:bg-raised"
+          className="btn btn-secondary"
           disabled={submitting}
           onClick={onClose}
         >
@@ -120,7 +122,7 @@ export function ConfirmDialog({
         </button>
         <button
           type="button"
-          className="border border-severity-warning bg-[var(--severity-warning-bg)] px-3 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          className={`btn ${destructive ? "btn-danger" : "btn-primary"}`}
           disabled={disabled}
           onClick={() => void submit()}
         >

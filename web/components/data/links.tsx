@@ -14,12 +14,12 @@ function CopyButton({ value }: Readonly<{ value: string }>) {
   return (
     <button
       type="button"
-      className="ml-1 inline-flex align-middle text-ink-faint hover:text-ink"
+      className="btn btn-ghost ml-1 h-auto px-1 align-middle"
       aria-label="Copy full value"
       title="Copy full value"
       onClick={() => void navigator.clipboard.writeText(value)}
     >
-      <Copy aria-hidden="true" size={13} />
+      <Copy aria-hidden="true" size={12} strokeWidth={1.75} />
     </button>
   );
 }
@@ -37,7 +37,7 @@ export function AddressLink({
     >
       <a
         href={href}
-        className="text-severity-progress underline-offset-2 hover:underline"
+        className="text-ink-secondary underline-offset-2 transition-colors duration-150 hover:text-ink hover:underline"
       >
         {truncate(address)}
       </a>
@@ -64,11 +64,11 @@ export function TxidLink({
         href={href}
         target="_blank"
         rel="noreferrer"
-        className="ml-1 inline-flex align-middle text-severity-progress"
+        className="btn btn-ghost ml-1 h-auto px-1 align-middle"
         aria-label="Open transaction in Tronscan"
         title="Open in Tronscan"
       >
-        <ExternalLink aria-hidden="true" size={13} />
+        <ExternalLink aria-hidden="true" size={12} strokeWidth={1.75} />
       </a>
     </span>
   );

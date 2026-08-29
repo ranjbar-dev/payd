@@ -13,7 +13,7 @@ export function TotpField({
 }>) {
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-sm font-medium">
+      <label htmlFor={id} className="field mb-1">
         payd code
       </label>
       <input
@@ -34,7 +34,7 @@ export function TotpField({
         onKeyDown={(event) => {
           if (event.key === "Enter") event.preventDefault();
         }}
-        className="w-36 border border-border-strong bg-inset px-3 py-2 font-mono tracking-[0.25em]"
+        className="input w-36 font-mono tracking-[0.25em]"
         aria-describedby={`${id}-help`}
       />
       <p id={`${id}-help`} className="mt-1 text-xs text-ink-faint">

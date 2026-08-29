@@ -13,3 +13,4 @@ payd.*.yaml
 *.log
 # Playwright MCP run artifacts
 .playwright-mcp/
+.redesign-shots/

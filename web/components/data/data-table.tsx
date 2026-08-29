@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 
 export type DataTableColumn = {
@@ -19,9 +20,10 @@ export function TableFilters({
       {active ? (
         <button
           type="button"
-          className="text-sm text-severity-progress underline underline-offset-2"
+          className="btn btn-ghost"
           onClick={onClear}
         >
+          <X aria-hidden="true" size={14} strokeWidth={1.75} />
           Clear all
         </button>
       ) : null}
@@ -39,6 +41,7 @@ export function DataTable<T>({
   loading = false,
   skeletonRows = 6,
   onRowClick,
+  isRowActive,
   emptyState,
 }: Readonly<{
   columns: DataTableColumn[];
@@ -50,6 +53,7 @@ export function DataTable<T>({
   loading?: boolean;
   skeletonRows?: number;
   onRowClick?: (row: T) => void;
+  isRowActive?: (row: T) => boolean;
   emptyState?: ReactNode;
 }>) {
   const activate = (row: T, event: KeyboardEvent<HTMLTableRowElement>) => {
@@ -67,12 +71,12 @@ export function DataTable<T>({
         <caption className="sr-only">
           {caption}. Default sort: {defaultSort}.
         </caption>
-        <thead className="sticky top-0 z-10 bg-raised text-xs uppercase tracking-wide text-ink-secondary">
+        <thead>
           <tr>
             {columns.map((column) => (
               <th
                 key={column.id}
-                className={`whitespace-nowrap px-3 py-2 font-medium ${column.className ?? ""}`}
+                className={`th whitespace-nowrap ${column.className ?? ""}`}
               >
                 {column.label}
               </th>
@@ -82,28 +86,30 @@ export function DataTable<T>({
         <tbody>
           {loading ? (
             Array.from({ length: skeletonRows }, (_, index) => (
-              <tr key={index} className="h-11 border-t border-border-subtle">
-                <td colSpan={columns.length} className="px-3">
-                  <div className="h-3 w-4/5 bg-border-subtle" />
+              <tr key={index}>
+                <td colSpan={columns.length} className="td">
+                  <div className="h-3 w-4/5 animate-pulse bg-border-subtle" />
                 </td>
               </tr>
             ))
           ) : rows.length ? (
-            rows.map((row) => (
-              <tr
+            rows.map((row) => {
+              const active = isRowActive?.(row) ?? false;
+              return <tr
                 key={rowKey(row)}
-                className={`h-11 border-t border-border-subtle ${onRowClick ? "cursor-pointer hover:bg-raised" : ""}`}
+                className={`${active ? "bg-accent-bg" : ""} ${onRowClick ? "cursor-pointer" : ""} row-hover`}
+                style={active ? { boxShadow: "inset 2px 0 0 var(--accent)" } : undefined}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 onKeyDown={(event) => activate(row, event)}
                 tabIndex={onRowClick ? 0 : undefined}
                 role={onRowClick ? "link" : undefined}
               >
                 {renderRow(row)}
-              </tr>
-            ))
+              </tr>;
+            })
           ) : (
             <tr>
-              <td colSpan={columns.length} className="p-3">
+              <td colSpan={columns.length} className="td p-3">
                 {emptyState}
               </td>
             </tr>

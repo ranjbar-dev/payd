@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { AlertTriangle } from "lucide-react";
 
 export type PaydError = { code: string; message?: string; details?: unknown };
 
@@ -36,9 +37,12 @@ export function ErrorState({
         className="border border-severity-warning bg-[var(--severity-warning-bg)] p-3"
         role="alert"
       >
-        <p className="font-medium">
-          {copyByCode[error.code] ?? "An unrecognised error was returned."}
-        </p>
+        <div className="flex items-center gap-2">
+          <AlertTriangle aria-hidden="true" size={20} strokeWidth={1.75} className="text-severity-critical" />
+          <p className="font-medium text-ink">
+            {copyByCode[error.code] ?? "An unrecognised error was returned."}
+          </p>
+        </div>
         <p className="mt-1 text-sm text-ink-secondary">
           Error code:{" "}
           <code className="select-all font-mono text-ink">{error.code}</code>
@@ -51,7 +55,7 @@ export function ErrorState({
         {onRetry ? (
           <button
             type="button"
-            className="mt-3 border border-border-strong px-3 py-1.5 text-sm hover:bg-raised"
+            className="btn btn-secondary mt-3"
             onClick={onRetry}
           >
             Retry read

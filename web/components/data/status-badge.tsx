@@ -67,7 +67,7 @@ export function StatusBadge({
       aria-label={`${status}, ${severity} status`}
       title={STATUS_TITLES[status]}
     >
-      {Icon ? <Icon aria-hidden="true" size={13} strokeWidth={2.5} /> : null}
+      {Icon ? <Icon aria-hidden="true" size={14} strokeWidth={1.75} /> : null}
       {status}
     </span>
   );

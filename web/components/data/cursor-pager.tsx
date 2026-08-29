@@ -1,5 +1,7 @@
 "use client";
 
+import { ChevronLeft, ChevronRight } from "lucide-react";
+
 export function CursorPager({
   nextCursor,
   hasResults,
@@ -22,16 +24,17 @@ export function CursorPager({
     >
       <button
         type="button"
-        className="border border-border-strong px-3 py-1.5 hover:bg-raised"
+        className="btn btn-secondary"
         onClick={onStart}
       >
-        Back to start
+        <ChevronLeft aria-hidden="true" size={14} strokeWidth={1.75} />
+        Prev
       </button>
       {onLimitChange ? (
-        <label className="ml-auto text-ink-secondary">
+        <label className="field ml-auto">
           Rows{" "}
           <select
-            className="ml-1 border border-border-strong bg-panel px-2 py-1"
+            className="input w-auto"
             value={limit}
             onChange={(event) =>
               onLimitChange(event.currentTarget.value === "200" ? 200 : 50)
@@ -45,10 +48,11 @@ export function CursorPager({
       {nextCursor ? (
         <button
           type="button"
-          className="border border-border-strong px-3 py-1.5 hover:bg-raised"
+          className="btn btn-secondary"
           onClick={() => onNext(nextCursor)}
         >
-          Load more
+          Next
+          <ChevronRight aria-hidden="true" size={14} strokeWidth={1.75} />
         </button>
       ) : (
         <span className="text-ink-faint">

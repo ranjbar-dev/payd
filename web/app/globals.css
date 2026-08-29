@@ -16,24 +16,32 @@
   --color-severity-muted: var(--severity-muted);
   --color-severity-warning: var(--severity-warning);
   --color-severity-critical: var(--severity-critical);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-bg: var(--accent-bg);
+  --font-sans: var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  --font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
 }
 
 @layer base {
   :root {
     color-scheme: dark;
 
-    --surface-canvas: #080a0d;
-    --surface-panel: #0d1117;
-    --surface-raised: #141a22;
-    --surface-inset: #06080b;
-    --border-subtle: #252c36;
-    --border-strong: #3a4554;
+    --surface-canvas: #050608;
+    --surface-panel: #0b0e12;
+    --surface-raised: #12171e;
+    --surface-inset: #05070a;
+    --border-subtle: #20262f;
+    --border-strong: #333c49;
     --text-primary: #e8edf2;
-    --text-secondary: #aab5c2;
-    --text-faint: #6f7a88;
+    --text-secondary: #a3aebc;
+    --text-faint: #68727f;
     --focus-ring: #84c5ff;
+    --accent: #f59e0b;
+    --accent-hover: #fbbf24;
+    --accent-fg: #1a1204;
+    --accent-bg: #241a06;
+    --accent-ring: #fbbf24;
 
     /* Severity is semantic: never use these colours as entity identifiers. */
     --severity-neutral: #aab5c2;
@@ -67,7 +75,7 @@
     margin: 0;
     background: var(--surface-canvas);
     color: var(--text-primary);
-    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     font-size: 0.875rem;
     line-height: 1.4;
   }
@@ -98,12 +106,28 @@
   }
 
   :where(.font-mono, [data-financial-value], [data-address], [data-txid], [data-entity-id]) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
     font-variant-numeric: tabular-nums;
   }
 }
 
 @layer components {
+  .page { @apply mx-auto max-w-7xl space-y-4 p-4 lg:p-6; }
+  .page-kicker { @apply flex items-center gap-1.5 text-[11px] uppercase tracking-[0.14em] text-ink-faint; }
+  .page-title { @apply text-[18px] font-semibold text-ink; }
+  .card { @apply border border-border-subtle bg-panel p-4; }
+  .card-title { @apply text-[13px] font-semibold uppercase tracking-wide text-ink-secondary; }
+  .btn { @apply inline-flex h-8 items-center gap-1.5 rounded px-3 text-[13px] font-medium transition-colors duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]; }
+  .btn-primary { @apply bg-accent text-accent-fg hover:bg-[var(--accent-hover)]; }
+  .btn-secondary { @apply border border-border-strong bg-raised text-ink hover:border-ink-faint hover:bg-panel; }
+  .btn-ghost { @apply text-ink-secondary hover:bg-raised hover:text-ink; }
+  .btn-danger { @apply border border-severity-critical text-severity-critical hover:bg-[var(--severity-critical-bg)]; }
+  .input { @apply h-8 w-full rounded border border-border-subtle bg-raised px-2 text-[13px] text-ink placeholder:text-ink-faint focus-visible:border-[var(--focus-ring)]; }
+  .field { @apply grid gap-1 text-[11px] uppercase tracking-wide text-ink-faint; }
+  .th { @apply sticky top-0 z-10 border-b border-border-strong bg-panel px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-faint; }
+  .td { @apply border-b border-border-subtle px-3 py-1.5 align-top; }
+  .row-hover { @apply transition-colors duration-150 hover:bg-raised; }
+
   .status-badge {
     display: inline-flex;
     align-items: center;

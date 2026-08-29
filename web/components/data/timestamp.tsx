@@ -33,19 +33,19 @@ export function Timestamp({
     setNow(Date.now());
   }, []);
 
-  if (seconds == null) return <span className="text-ink-faint">—</span>;
+  if (seconds == null) return <span className="font-mono tabular-nums text-ink-faint">—</span>;
   if (variant === "duration")
-    return <span className="font-mono tabular-nums">{duration(seconds)}</span>;
+    return <span className="font-mono tabular-nums text-ink">{duration(seconds)}</span>;
 
   const date = new Date(seconds * 1000);
   const utc = date.toISOString().replace("T", " ").replace(".000Z", " UTC");
-  if (variant === "utc-day") return <span title={utc}>{utc}</span>;
+  if (variant === "utc-day") return <span className="font-mono tabular-nums text-ink" title={utc}>{utc}</span>;
 
   const age = now == null ? null : Math.floor((now - date.getTime()) / 60000);
   const display =
     age != null && age >= 0 && age < 60 ? `${age}m ago` : localTime(seconds);
   return (
-    <time dateTime={date.toISOString()} title={utc}>
+    <time className="font-mono tabular-nums text-ink" dateTime={date.toISOString()} title={utc}>
       {display}
     </time>
   );
