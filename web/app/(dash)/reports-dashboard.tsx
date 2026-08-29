@@ -9,6 +9,7 @@ import { Amount } from "@/components/data/amount";
 import { DataTable, TableFilters } from "@/components/data/data-table";
 import { EmptyState } from "@/components/data/empty-state";
 import { ErrorState } from "@/components/data/error-state";
+import { RefreshButton } from "@/components/data/refresh-button";
 import { Timestamp } from "@/components/data/timestamp";
 import { isPaydError, paydRequest } from "@/lib/payd/browser-client";
 import type { FeesReportResponse, VolumeReportBucket, VolumeReportResponse } from "@/lib/payd/types";
@@ -175,8 +176,7 @@ export function ReportsDashboard({ tab }: Readonly<{ tab: "volume" | "fees" }>) 
   return <main className="page">
     <header>
       <p className="page-kicker"><FileBarChart aria-hidden="true" size={14} strokeWidth={1.75} />Operations / Reports</p>
-      <h1 className="page-title mt-1">Reports</h1>
-      <p className="mt-1 text-[13px] text-ink-secondary">A report is run, not watched: figures here do not auto-refresh.</p>
+      <div className="mt-1 flex flex-wrap items-start justify-between gap-3"><div><h1 className="page-title">Reports</h1><p className="mt-1 text-[13px] text-ink-secondary">A report is run, not watched: figures here do not auto-refresh.</p></div><RefreshButton /></div>
     </header>
     <nav className="flex gap-4 border-b border-border-subtle text-sm" aria-label="Report tabs">
       <Link href="/reports" className={tab === "volume" ? "cursor-pointer border-b-2 border-accent pb-2 text-ink transition-colors duration-150 hover:text-accent focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" : "cursor-pointer pb-2 text-ink-secondary transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"}>Volume report</Link>

@@ -11,6 +11,7 @@ import { Amount } from "@/components/data/amount";
 import { DataTable } from "@/components/data/data-table";
 import { EmptyState } from "@/components/data/empty-state";
 import { ErrorState } from "@/components/data/error-state";
+import { RefreshButton } from "@/components/data/refresh-button";
 import { StatusBadge } from "@/components/data/status-badge";
 import { Timestamp } from "@/components/data/timestamp";
 import { isPaydError, paydRequest } from "@/lib/payd/browser-client";
@@ -133,7 +134,7 @@ export function OverviewDashboard() {
     <main className="page">
       <header>
         <p className="page-kicker"><LayoutDashboard aria-hidden="true" size={14} strokeWidth={1.75} />OPERATIONS / OVERVIEW</p>
-        <h1 className="page-title mt-1">Operational overview</h1>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-3"><h1 className="page-title">Operational overview</h1><RefreshButton /></div>
       </header>
 
       <section className="card">

@@ -12,6 +12,7 @@ import { DataTable } from "@/components/data/data-table";
 import { EmptyState } from "@/components/data/empty-state";
 import { ErrorState } from "@/components/data/error-state";
 import { AddressLink, EntityId } from "@/components/data/links";
+import { RefreshButton } from "@/components/data/refresh-button";
 import { StatusBadge } from "@/components/data/status-badge";
 import { Timestamp } from "@/components/data/timestamp";
 import { ConfirmDialog } from "@/components/forms/confirm-dialog";
@@ -103,7 +104,7 @@ export function FundedTerminalWorklist() {
         <div>
           <h1 className="page-title">Funded-terminal worklist</h1>
           <p className="mt-1 text-[13px] text-ink-secondary">Oldest first. Age is the risk.</p>
-        </div>
+        </div><div className="flex flex-wrap gap-2"><RefreshButton /></div>
       </div>
     </header>
 

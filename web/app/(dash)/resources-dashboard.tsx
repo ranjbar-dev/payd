@@ -8,6 +8,7 @@ import { useEffect } from "react";
 
 import { Amount } from "@/components/data/amount";
 import { ErrorState } from "@/components/data/error-state";
+import { RefreshButton } from "@/components/data/refresh-button";
 import { Timestamp } from "@/components/data/timestamp";
 import { isPaydError, paydRequest } from "@/lib/payd/browser-client";
 import type { ChainParameters, EnergyStatus } from "@/lib/payd/types";
@@ -84,5 +85,5 @@ export function ResourcesDashboard() {
   const config = useQuery(paydQueryOptions({ queryKey: queryKeys.config(), queryFn: () => paydRequest<ResourceConfig>(["config"]), polling: { tier: "D" } }));
   const fees = useQuery(paydQueryOptions({ queryKey: queryKeys.reports("fees", Object.fromEntries(feesQuery)), queryFn: () => paydRequest<FeesReport>(["reports", "fees"], {}, feesQuery), polling: { tier: "D" } }));
 
-  return <main className="page"><header><p className="page-kicker"><Zap aria-hidden="true" size={14} strokeWidth={1.75} />Operations / Resources</p><h1 className="page-title mt-1">Resources and energy</h1><p className="mt-1 text-[13px] text-ink-secondary">Why withdrawals are waiting, what resources cost, and whether the provider is quietly failing.</p></header><div className="grid gap-4 xl:grid-cols-2"><ProviderCard status={provider.data} /><ChainParametersCard params={params.data} error={params.error} reload={() => void params.refetch()} /><ResourceWalletCard wallet={wallet.data} config={config.data} error={wallet.error} reload={() => void wallet.refetch()} /><FeeCard fees={fees.data} error={fees.error} reload={() => void fees.refetch()} /></div><ResourcePurchases /><ResourceGrants /><ReadProblem error={provider.error} reload={() => void provider.refetch()} /><ReadProblem error={config.error} reload={() => void config.refetch()} /></main>;
+  return <main className="page"><header><p className="page-kicker"><Zap aria-hidden="true" size={14} strokeWidth={1.75} />Operations / Resources</p><div className="mt-1 flex flex-wrap items-start justify-between gap-3"><div><h1 className="page-title">Resources and energy</h1><p className="mt-1 text-[13px] text-ink-secondary">Why withdrawals are waiting, what resources cost, and whether the provider is quietly failing.</p></div><RefreshButton /></div></header><div className="grid gap-4 xl:grid-cols-2"><ProviderCard status={provider.data} /><ChainParametersCard params={params.data} error={params.error} reload={() => void params.refetch()} /><ResourceWalletCard wallet={wallet.data} config={config.data} error={wallet.error} reload={() => void wallet.refetch()} /><FeeCard fees={fees.data} error={fees.error} reload={() => void fees.refetch()} /></div><ResourcePurchases /><ResourceGrants /><ReadProblem error={provider.error} reload={() => void provider.refetch()} /><ReadProblem error={config.error} reload={() => void config.refetch()} /></main>;
 }

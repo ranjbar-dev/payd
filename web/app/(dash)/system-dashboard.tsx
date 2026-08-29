@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Server } from "lucide-react";
 
+import { RefreshButton } from "@/components/data/refresh-button";
 import { SystemAssets } from "./system-assets";
 import { SystemAudit } from "./system-audit";
 import { SystemConfig } from "./system-config";
@@ -53,11 +54,10 @@ export function SystemDashboard({
     <main className="page">
       <header>
         <p className="page-kicker"><Server aria-hidden="true" size={14} strokeWidth={1.75} />Operations / System</p>
-        <h1 className="page-title mt-1">System and audit</h1>
-        <p className="mt-1 text-sm text-ink-secondary">
+        <div className="mt-1 flex flex-wrap items-start justify-between gap-3"><div><h1 className="page-title">System and audit</h1><p className="mt-1 text-sm text-ink-secondary">
           Everything needed to diagnose payd without shell access, plus the compliance trail. Almost all of it is
           tier D — manual refresh. This is a page you open when something is wrong, not one you watch.
-        </p>
+        </p></div><RefreshButton /></div>
       </header>
       <nav className="flex flex-wrap gap-1 border-b border-border-subtle" aria-label="System tabs">
         {TABS.map(([id, label]) => (
