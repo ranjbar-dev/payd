@@ -19,6 +19,7 @@ Self-hosted, single-tenant TRON payment processor. Two subprojects:
 |-------------|-----------|
 | Backend code | [`backend/CLAUDE.md`](backend/CLAUDE.md) → `backend/docs/index.md` |
 | Web code | [`web/CLAUDE.md`](web/CLAUDE.md) → `web/docs/index.md` |
+| Web UI / design | [`web/CLAUDE.md`](web/CLAUDE.md) "UI work" → [`web/DESIGN.md`](web/DESIGN.md); invoke the `ui-ux-pro-max` skill for every UI task |
 | Local setup | [`QUICKSTART.md`](QUICKSTART.md) |
 | Deploy | [`PRODUCTION.md`](PRODUCTION.md) |
 

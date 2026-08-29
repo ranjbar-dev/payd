@@ -20,6 +20,24 @@ business logic here**; the backend decides, this app renders and submits.
 Don't duplicate validation or business rules that belong in the backend — this
 app renders and submits, the backend decides.
 
+## UI work — mandatory
+
+Any task that adds or changes UI (a page, component, table, form, button, modal,
+layout, styling, icon, colour, spacing, hover/focus state):
+
+1. **Invoke the `ui-ux-pro-max` skill first** (`web/.codex/skills/ui-ux-pro-max`
+   — run `scripts/search.py … --design-system`, then domain/stack searches).
+   Not optional, even for "small" tweaks.
+2. **Follow [`DESIGN.md`](DESIGN.md)** — the canonical design system (dark-mode
+   OLED minimalism, compact tables, single amber accent, Fira Sans + Fira Code,
+   lucide icons, button/hover spec). Its "Non-negotiable invariants" and
+   "Per-run checklist" are binding.
+3. Tailwind **v4** (CSS-first `@theme` in `globals.css`, `@tailwindcss/postcss`).
+4. Every button/clickable: `cursor-pointer` + a hover colour change + focus ring.
+   Icons from `lucide-react` (never emoji); icon-only buttons get `aria-label`.
+5. Redesign changes markup / classes / icons / tokens only — never data
+   fetching, API calls, `lib/payd/*`, schemas, or business logic.
+
 ### Next.js version notice
 
 This is Next.js 16 — APIs, conventions, and file structure differ from older
