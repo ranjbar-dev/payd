@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { Loader2, LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -91,17 +92,17 @@ export function SystemSession({
 
   return (
     <section className="space-y-4">
-      <div className="border border-border-subtle bg-panel p-4">
-        <h2 className="font-semibold">payd key</h2>
+      <div className="card">
+        <h2 className="card-title">payd key</h2>
         <p className="mt-1 text-xs text-ink-faint">GET /auth/whoami</p>
         {whoami.data ? (
           <dl className="mt-3 grid gap-3 sm:grid-cols-2">
             <div>
-              <dt className="text-xs uppercase tracking-wide text-ink-faint">Key name</dt>
+              <dt className="text-ink-faint text-[11px] uppercase tracking-wide">Key name</dt>
               <dd className="mt-0.5 font-mono">{whoami.data.key_name}</dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide text-ink-faint">Scopes</dt>
+              <dt className="text-ink-faint text-[11px] uppercase tracking-wide">Scopes</dt>
               <dd className="mt-0.5">
                 {scopes.length ? (
                   <ul className="flex flex-wrap gap-1.5">{scopes.map((scope) => <li key={scope} className="border border-border-strong px-1.5 py-0.5 font-mono text-xs">{scope}</li>)}</ul>
@@ -112,14 +113,14 @@ export function SystemSession({
             </div>
           </dl>
         ) : (
-          <p className="mt-2 text-ink-faint">Key identity has not loaded.</p>
+          !whoami.isError ? <div className="mt-3 h-8 animate-pulse bg-raised" aria-label="Loading key identity" /> : null
         )}
         <ErrorNotice error={whoami.isError ? whoami.error : null} updatedAt={whoami.dataUpdatedAt} onReload={() => void whoami.refetch()} />
       </div>
 
       {missing.length ? (
-        <div className="border border-severity-warning bg-[var(--severity-warning-bg)] p-4 text-sm" role="alert">
-          <h2 className="font-semibold text-severity-warning">Missing scopes</h2>
+        <div className="card border-severity-warning bg-[var(--severity-warning-bg)] text-sm" role="alert">
+          <h2 className="card-title text-severity-warning">Missing scopes</h2>
           <ul className="mt-2 space-y-1">
             {missing.map((scope) => (
               <li key={scope}>
@@ -130,16 +131,16 @@ export function SystemSession({
         </div>
       ) : null}
 
-      <div className="border border-border-subtle bg-panel p-4">
-        <h2 className="font-semibold">Dashboard session</h2>
+      <div className="card">
+        <h2 className="card-title">Dashboard session</h2>
         <dl className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
-            <dt className="text-xs uppercase tracking-wide text-ink-faint">Issued</dt>
-            <dd className="mt-0.5"><Timestamp seconds={issuedAt} /></dd>
+            <dt className="text-ink-faint text-[11px] uppercase tracking-wide">Issued</dt>
+            <dd className="mt-0.5 text-right font-mono tabular-nums"><Timestamp seconds={issuedAt} /></dd>
           </div>
           <div>
-            <dt className="text-xs uppercase tracking-wide text-ink-faint">Expires</dt>
-            <dd className="mt-0.5"><Timestamp seconds={expiresAt} /></dd>
+            <dt className="text-ink-faint text-[11px] uppercase tracking-wide">Expires</dt>
+            <dd className="mt-0.5 text-right font-mono tabular-nums"><Timestamp seconds={expiresAt} /></dd>
           </div>
         </dl>
         <p className="mt-3 text-sm text-ink-secondary">
@@ -150,15 +151,15 @@ export function SystemSession({
           type="button"
           disabled={loggingOut}
           onClick={() => void logout()}
-          className="mt-3 border border-border-strong px-3 py-1.5 text-sm hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50"
+          className="btn btn-secondary mt-3"
         >
-          {loggingOut ? "Logging out…" : "Log out"}
+          {loggingOut ? <Loader2 aria-hidden="true" size={14} strokeWidth={1.75} className="animate-spin" /> : <LogOut aria-hidden="true" size={14} strokeWidth={1.75} />}{loggingOut ? "Logging out…" : "Log out"}
         </button>
         {logoutError ? <p className="mt-2 text-severity-warning" role="alert">{logoutError}</p> : null}
       </div>
 
-      <div className="border border-border-subtle bg-panel p-4 text-sm">
-        <h2 className="font-semibold">Two different codes</h2>
+      <div className="card text-sm">
+        <h2 className="card-title">Two different codes</h2>
         <p className="mt-2 text-ink-secondary">
           The <strong>dashboard code</strong> is entered once, at login, and verified by this Next.js server against{" "}
           <code className="font-mono text-xs">DASH_TOTP_SECRET</code> — it protects access to the dashboard itself. The{" "}
@@ -169,15 +170,15 @@ export function SystemSession({
         </p>
       </div>
 
-      <div className="border border-border-subtle bg-panel p-4 text-sm">
-        <h2 className="font-semibold">Deployment identity</h2>
+      <div className="card text-sm">
+        <h2 className="card-title">Deployment identity</h2>
         <dl className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
-            <dt className="text-xs uppercase tracking-wide text-ink-faint">payd host</dt>
+            <dt className="text-ink-faint text-[11px] uppercase tracking-wide">payd host</dt>
             <dd className="mt-0.5 font-mono">{paydHost}</dd>
           </div>
           <div>
-            <dt className="text-xs uppercase tracking-wide text-ink-faint">Tronscan network</dt>
+            <dt className="text-ink-faint text-[11px] uppercase tracking-wide">Tronscan network</dt>
             <dd className="mt-0.5">
               {tronNetwork(tronscanBaseUrl)} <span className="text-ink-faint">({new URL(tronscanBaseUrl).hostname})</span>
             </dd>

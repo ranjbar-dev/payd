@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { Server } from "lucide-react";
 
 import { SystemAssets } from "./system-assets";
 import { SystemAudit } from "./system-audit";
@@ -49,22 +50,22 @@ export function SystemDashboard({
   const tab: Tab = isTab(requestedTab) ? requestedTab : "workers";
 
   return (
-    <main className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6">
+    <main className="page">
       <header>
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-faint">Operations / System</p>
-        <h1 className="mt-1 text-2xl font-semibold">System and audit</h1>
+        <p className="page-kicker"><Server aria-hidden="true" size={14} strokeWidth={1.75} />Operations / System</p>
+        <h1 className="page-title mt-1">System and audit</h1>
         <p className="mt-1 text-sm text-ink-secondary">
           Everything needed to diagnose payd without shell access, plus the compliance trail. Almost all of it is
           tier D — manual refresh. This is a page you open when something is wrong, not one you watch.
         </p>
       </header>
-      <nav className="flex flex-wrap gap-4 border-b border-border-subtle text-sm" aria-label="System tabs">
+      <nav className="flex flex-wrap gap-1 border-b border-border-subtle" aria-label="System tabs">
         {TABS.map(([id, label]) => (
           <Link
             key={id}
             href={`/system?tab=${id}`}
             aria-current={id === tab ? "page" : undefined}
-            className={id === tab ? "border-b-2 border-severity-progress pb-2 font-medium text-ink" : "pb-2 text-ink-secondary hover:text-ink"}
+            className={id === tab ? "cursor-pointer border-b-2 border-accent px-3 py-2 text-[13px] font-medium text-ink transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" : "cursor-pointer px-3 py-2 text-[13px] text-ink-secondary transition-colors duration-150 hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"}
           >
             {label}
           </Link>

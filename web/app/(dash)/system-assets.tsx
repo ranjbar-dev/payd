@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink } from "lucide-react";
+import { AlertTriangle, ExternalLink } from "lucide-react";
 
 import { useTronscanBaseUrl } from "@/app/providers";
 import { Amount } from "@/components/data/amount";
@@ -30,8 +30,8 @@ function ContractLink({ contract, tronscanBaseUrl }: Readonly<{ contract: string
   return (
     <span className="inline-flex items-center gap-1">
       <EntityId value={contract} />
-      <a href={href} target="_blank" rel="noreferrer" className="inline-flex text-severity-progress" aria-label={`Open ${contract} on Tronscan`} title="Open on Tronscan">
-        <ExternalLink aria-hidden="true" size={13} />
+      <a href={href} target="_blank" rel="noreferrer" className="inline-flex cursor-pointer text-severity-progress transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" aria-label={`Open ${contract} on Tronscan`} title="Open on Tronscan">
+        <ExternalLink aria-hidden="true" size={14} strokeWidth={1.75} />
       </a>
     </span>
   );
@@ -40,15 +40,15 @@ function ContractLink({ contract, tronscanBaseUrl }: Readonly<{ contract: string
 function AssetRow({ asset, tronscanBaseUrl }: Readonly<{ asset: Asset; tronscanBaseUrl: string }>) {
   return (
     <>
-      <td className="px-3 py-2 font-mono font-medium">
+      <td className="td font-mono font-medium">
         {asset.symbol}
-        {!asset.verified ? <span className="ml-2 text-severity-warning" title="Not marked verified by payd's configuration">⚠ unverified</span> : null}
+        {!asset.verified ? <span className="ml-2 inline-flex items-center gap-1 text-severity-warning" title="Not marked verified by payd's configuration"><AlertTriangle aria-hidden="true" size={13} strokeWidth={1.75} />unverified</span> : null}
       </td>
-      <td className="px-3 py-2 font-mono">{asset.kind}</td>
-      <td className="px-3 py-2"><ContractLink contract={asset.contract} tronscanBaseUrl={tronscanBaseUrl} /></td>
-      <td className="px-3 py-2 font-mono tabular-nums">{asset.decimals}</td>
-      <td className="px-3 py-2"><Amount value={asset.min_deposit} asset={asset.symbol} /></td>
-      <td className="px-3 py-2">{asset.verified ? "Verified" : <span className="text-severity-warning">Unverified</span>}</td>
+      <td className="td font-mono">{asset.kind}</td>
+      <td className="td"><ContractLink contract={asset.contract} tronscanBaseUrl={tronscanBaseUrl} /></td>
+      <td className="td text-right font-mono tabular-nums">{asset.decimals}</td>
+      <td className="td text-right"><Amount value={asset.min_deposit} asset={asset.symbol} /></td>
+      <td className="td">{asset.verified ? "Verified" : <span className="text-severity-warning">Unverified</span>}</td>
     </>
   );
 }
@@ -64,7 +64,8 @@ export function SystemAssets() {
   const rows = assets.data?.assets ?? [];
 
   return (
-    <section className="space-y-3">
+    <section className="card space-y-3">
+      <h2 className="card-title">Configured assets</h2>
       <p className="text-sm text-ink-secondary">
         Decimals govern input precision everywhere in the dashboard (backend API-034) — every amount input and dust
         indicator reads them from this same response instead of a hardcoded copy.

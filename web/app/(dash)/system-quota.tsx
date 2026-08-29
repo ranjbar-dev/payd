@@ -47,23 +47,24 @@ export function SystemQuota() {
         usually the first symptom of a detection outage, before anything else notices (WSYS-012).
       </p>
       {quota.data ? (
-        <div className="border border-border-subtle bg-panel p-4">
+        <div className="card">
+          <h2 className="card-title">Quota status</h2>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
             <div>
               <dt className="text-xs uppercase tracking-wide text-ink-faint">Requests today (UTC)</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">{quota.data.requests_today}</dd>
+              <dd className="mt-0.5 text-right font-mono tabular-nums">{quota.data.requests_today}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-ink-faint">Daily quota</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">{quota.data.daily_request_quota}</dd>
+              <dd className="mt-0.5 text-right font-mono tabular-nums">{quota.data.daily_request_quota}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-ink-faint">Percent used</dt>
-              <dd className={atOrAboveThreshold ? "mt-0.5 font-mono tabular-nums text-severity-critical" : "mt-0.5 font-mono tabular-nums"}>{quota.data.percent_used}%</dd>
+              <dd className={atOrAboveThreshold ? "mt-0.5 text-right font-mono tabular-nums text-severity-critical" : "mt-0.5 text-right font-mono tabular-nums"}>{quota.data.percent_used}%</dd>
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-ink-faint">Readiness threshold</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">{READINESS_THRESHOLD}%</dd>
+              <dd className="mt-0.5 text-right font-mono tabular-nums">{READINESS_THRESHOLD}%</dd>
             </div>
           </dl>
           <p className={atOrAboveThreshold ? "mt-3 text-sm text-severity-critical" : "mt-3 text-sm text-ink-secondary"}>
@@ -73,12 +74,12 @@ export function SystemQuota() {
           </p>
         </div>
       ) : (
-        <p className="text-ink-faint">Quota has not loaded.</p>
+        <div className="card animate-pulse" aria-label="Loading quota"><div className="h-3 w-28 bg-raised" /><div className="mt-4 h-12 bg-raised" /></div>
       )}
       <ErrorNotice error={quota.isError ? quota.error : null} updatedAt={quota.dataUpdatedAt} onReload={() => void quota.refetch()} />
 
-      <div>
-        <h2 className="font-semibold">Seven-day history (UTC)</h2>
+      <div className="card">
+        <h2 className="card-title">Seven-day history (UTC)</h2>
         <p className="mt-1 text-sm text-ink-secondary">
           Every day below is a UTC calendar day (UI-010), in the order payd returned it — oldest first — and this
           table is never re-sorted client-side (UI-043).
@@ -94,9 +95,9 @@ export function SystemQuota() {
             rowKey={(row) => String(row.entry.day_start)}
             renderRow={(row) => (
               <>
-                <td className="px-3 py-2"><Timestamp seconds={row.entry.day_start} variant="utc-day" /></td>
-                <td className="px-3 py-2 font-mono tabular-nums">{row.entry.requests}</td>
-                <td className="px-3 py-2">{trend(row)}</td>
+                <td className="td text-right font-mono tabular-nums"><Timestamp seconds={row.entry.day_start} variant="utc-day" /></td>
+                <td className="td text-right font-mono tabular-nums">{row.entry.requests}</td>
+                <td className="td">{trend(row)}</td>
               </>
             )}
             defaultSort="Backend day_start ascending order"
@@ -107,8 +108,8 @@ export function SystemQuota() {
         </div>
       </div>
 
-      <p className="text-sm text-ink-secondary">
-        <Link href="/addresses?has_balance=1" className="text-severity-progress underline underline-offset-2">
+      <p className="card text-sm text-ink-secondary">
+        <Link href="/addresses?has_balance=1" className="cursor-pointer text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">
           Balance-holding addresses
         </Link>{" "}
         are the growth driver behind this count (backend OPS-007) — every address able to receive a payment is one

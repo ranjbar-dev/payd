@@ -66,21 +66,21 @@ function AuditRow({ entry }: Readonly<{ entry: AuditEntry }>) {
   const pretty = prettyDetail(entry.detail);
   return (
     <>
-      <td className={withdrawalRelated ? "border-l-2 border-severity-progress px-3 py-2" : "px-3 py-2"}>
+      <td className={withdrawalRelated ? "td border-l-2 border-severity-progress text-right font-mono tabular-nums" : "td text-right font-mono tabular-nums"}>
         <Timestamp seconds={entry.created_at} />
         {withdrawalRelated ? <span className="mt-0.5 block text-xs font-medium text-severity-progress">Withdrawal</span> : null}
       </td>
-      <td className="px-3 py-2 font-mono text-xs">{entry.actor}</td>
-      <td className="px-3 py-2 font-mono text-xs">{entry.action}</td>
-      <td className="px-3 py-2">
+      <td className="td font-mono text-xs">{entry.actor}</td>
+      <td className="td font-mono text-xs">{entry.action}</td>
+      <td className="td">
         {link ? (
-          <Link href={link.href} className="font-mono text-xs text-severity-progress underline underline-offset-2">{entry.subject}</Link>
+          <Link href={link.href} className="cursor-pointer font-mono text-xs text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">{entry.subject}</Link>
         ) : (
           <EntityId value={entry.subject} />
         )}
       </td>
-      <td className="px-3 py-2">{pretty ? <pre className="max-w-xs overflow-auto whitespace-pre-wrap text-xs text-ink-secondary">{pretty}</pre> : <span className="text-ink-faint">—</span>}</td>
-      <td className="px-3 py-2 font-mono text-xs">{entry.ip || "—"}</td>
+      <td className="td">{pretty ? <pre className="line-clamp-2 max-w-xs whitespace-pre-wrap text-[11px] text-ink-secondary" title={pretty}>{pretty}</pre> : <span className="text-ink-faint">—</span>}</td>
+      <td className="td text-right font-mono tabular-nums text-xs">{entry.ip || "—"}</td>
     </>
   );
 }
@@ -121,18 +121,19 @@ export function SystemAudit() {
   const active = Boolean(actor || action || subject || fromDate || toDate);
 
   return (
-    <section className="space-y-3">
+    <section className="card space-y-3">
+      <h2 className="card-title">Audit log</h2>
       <p className="text-sm text-ink-secondary">
         Every dashboard action reaches payd with one shared API key, so the <code className="font-mono text-xs">actor</code>{" "}
         recorded below is the dashboard, not the human who clicked (backend AUTH-050, WDR-024, WSYS-042).
         Attribution to a specific operator comes from the dashboard&apos;s own application logs, not this table.
       </p>
       <TableFilters active={active} onClear={() => setParams({ audit_actor: "", audit_action: "", audit_subject: "", audit_from: "", audit_to: "" })}>
-        <label className="grid gap-1 text-xs text-ink-secondary">Actor<input value={actor} onChange={(event) => setParams({ audit_actor: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">Action<input value={action} onChange={(event) => setParams({ audit_action: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">Subject<input value={subject} onChange={(event) => setParams({ audit_subject: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">From (UTC)<input type="date" value={fromDate} onChange={(event) => setParams({ audit_from: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">To (UTC)<input type="date" value={toDate} onChange={(event) => setParams({ audit_to: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>
+        <label className="grid gap-1 text-xs text-ink-secondary">Actor<input value={actor} onChange={(event) => setParams({ audit_actor: event.currentTarget.value })} className="input h-8" /></label>
+        <label className="grid gap-1 text-xs text-ink-secondary">Action<input value={action} onChange={(event) => setParams({ audit_action: event.currentTarget.value })} className="input h-8" /></label>
+        <label className="grid gap-1 text-xs text-ink-secondary">Subject<input value={subject} onChange={(event) => setParams({ audit_subject: event.currentTarget.value })} className="input h-8" /></label>
+        <label className="grid gap-1 text-xs text-ink-secondary">From (UTC)<input type="date" value={fromDate} onChange={(event) => setParams({ audit_from: event.currentTarget.value })} className="input h-8" /></label>
+        <label className="grid gap-1 text-xs text-ink-secondary">To (UTC)<input type="date" value={toDate} onChange={(event) => setParams({ audit_to: event.currentTarget.value })} className="input h-8" /></label>
       </TableFilters>
       <DataTable
         columns={[

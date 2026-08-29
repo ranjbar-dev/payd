@@ -1,9 +1,9 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Webhook } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { TableFilters } from "@/components/data/data-table";
 import { ErrorState } from "@/components/data/error-state";
 import { isPaydError, paydRequest } from "@/lib/payd/browser-client";
 import type { DeadIpnPage, IpnConsumerPage } from "@/lib/payd/types";
@@ -38,10 +38,10 @@ export function WebhooksDashboard() {
   const dead = useQuery(paydQueryOptions({ queryKey: queryKeys.ipn.dead(Object.fromEntries(deadQuery)), queryFn: () => paydRequest<DeadIpnPage>(["ipn", "dead"], {}, deadQuery), polling: { tier: "B" } }));
   const setParams = (next: Record<string, string>) => { const value = new URLSearchParams(search); Object.entries(next).forEach(([key, item]) => item ? value.set(key, item) : value.delete(key)); if (!("cursor" in next)) value.delete("cursor"); router.replace(`${pathname}${value.size ? `?${value}` : ""}`); };
 
-  return <main className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6"><header><p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-faint">Operations / Webhooks</p><h1 className="mt-1 text-2xl font-semibold">Webhooks / IPN</h1><p className="mt-1 text-sm text-ink-secondary">Consumer configuration is supplied by payd. This page observes delivery and provides the narrow, idempotent notification-redelivery exception.</p></header>
-    <WebhookConsumers consumers={consumers.data?.consumers ?? []} />
+  return <main className="page"><header><p className="page-kicker"><Webhook aria-hidden="true" size={14} strokeWidth={1.75} />Operations / Webhooks</p><h1 className="page-title mt-1">Webhooks / IPN</h1><p className="mt-1 max-w-3xl text-[13px] text-ink-secondary">Consumer configuration is supplied by payd. This page observes delivery and provides the narrow, idempotent notification-redelivery exception.</p></header>
+    <WebhookConsumers consumers={consumers.data?.consumers ?? []} loading={consumers.isLoading} />
     <QueryError error={consumers.isError ? consumers.error : null} updatedAt={consumers.dataUpdatedAt} onRetry={() => void consumers.refetch()} />
-    <section className="space-y-3"><TableFilters active={Boolean(consumer)} onClear={() => setParams({ consumer: "" })}><label className="grid gap-1 text-xs text-ink-secondary">Dead-letter consumer<select value={consumer} onChange={(event) => setParams({ consumer: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink"><option value="">All consumers</option>{(consumers.data?.consumers ?? []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label></TableFilters><WebhookDeadLetters page={dead.data} consumer={consumer} onCursor={(cursor) => setParams({ cursor })} onRetrySuccess={async () => { await Promise.all([dead.refetch(), client.invalidateQueries({ queryKey: queryKeys.stats() })]); }} /></section>
+    <WebhookDeadLetters page={dead.data} loading={dead.isLoading} consumer={consumer} consumers={consumers.data?.consumers ?? []} onConsumerChange={(next) => setParams({ consumer: next })} onCursor={(cursor) => setParams({ cursor })} onRetrySuccess={async () => { await Promise.all([dead.refetch(), client.invalidateQueries({ queryKey: queryKeys.stats() })]); }} />
     <QueryError error={dead.isError ? dead.error : null} updatedAt={dead.dataUpdatedAt} onRetry={() => void dead.refetch()} />
     <WebhookReplay consumers={consumers.data?.consumers ?? []} />
     <WebhookEventReference />

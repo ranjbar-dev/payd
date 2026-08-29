@@ -55,8 +55,8 @@ export function Duration({ seconds }: Readonly<{ seconds: number | null | undefi
 // is attempted at all.
 export function ScopeDisabled({ scope, label }: Readonly<{ scope: string; label: string }>) {
   return (
-    <div className="border border-border-strong bg-panel p-4 text-sm text-ink-secondary" role="status">
-      <p className="font-medium text-ink">{label} is disabled.</p>
+    <div className="card text-sm text-ink-secondary" role="status">
+      <p className="card-title text-ink">{label} is disabled.</p>
       <p className="mt-1">
         This payd key is missing the <code className="font-mono text-ink">{scope}</code> scope, which this tab
         requires. Nothing has been requested from payd for it.

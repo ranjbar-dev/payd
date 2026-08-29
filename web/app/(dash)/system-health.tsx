@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { ExternalLink } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -42,7 +43,7 @@ function readinessDetail(
       return (
         <>
           The newest cached price is older than the configured staleness limit; order and withdrawal creation return
-          503 while this holds. See <Link href="/resources" className="underline underline-offset-2">Resources</Link> for
+          503 while this holds. See <Link href="/resources" className="cursor-pointer text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">Resources</Link> for
           current price ages.
         </>
       );
@@ -50,7 +51,7 @@ function readinessDetail(
       return (
         <>
           TronGrid quota projection: {quota?.percent_used ?? "—"}% / 90%. See the{" "}
-          <Link href="/system?tab=quota" className="underline underline-offset-2">Quota tab</Link>.
+          <Link href="/system?tab=quota" className="cursor-pointer text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">Quota tab</Link>.
         </>
       );
     case "reorg_depth_exceeded":
@@ -59,7 +60,7 @@ function readinessDetail(
       return (
         <>
           Energy burn ceiling: {config ? <Amount value={config.energy.max_burn_trx} asset="TRX" /> : "—"}. See{" "}
-          <Link href="/resources" className="underline underline-offset-2">Resources</Link> for the current energy fee.
+          <Link href="/resources" className="cursor-pointer text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">Resources</Link> for the current energy fee.
         </>
       );
     case "clock_skew":
@@ -85,24 +86,24 @@ export function SystemHealth({ paydHost }: Readonly<{ paydHost: string }>) {
   return (
     <section className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="border border-border-subtle bg-panel p-4">
-          <h2 className="font-semibold">/healthz — liveness</h2>
+        <div className="card">
+          <h2 className="card-title">/healthz — liveness</h2>
           <p className="mt-1 text-sm text-ink-secondary">
             200 for as long as the process is running and able to serve HTTP. It says nothing about the database,
             chain follower, or price freshness (backend OPS-002).
           </p>
-          {health.data ? <p className="mt-3"><StatusBadge status={health.data.status} /></p> : <p className="mt-3 text-ink-faint">Not loaded.</p>}
+          {health.data ? <dl className="mt-3"><div><dt className="text-ink-faint text-[11px] uppercase tracking-wide">Status</dt><dd className="mt-1"><StatusBadge status={health.data.status} /></dd></div></dl> : !health.isError ? <div className="mt-3 h-4 w-24 animate-pulse bg-raised" aria-label="Loading liveness" /> : null}
           <ErrorNotice error={health.isError ? health.error : null} updatedAt={health.dataUpdatedAt} onReload={() => void health.refetch()} />
         </div>
-        <div className="border border-border-subtle bg-panel p-4">
-          <h2 className="font-semibold">/readyz — readiness</h2>
+        <div className="card">
+          <h2 className="card-title">/readyz — readiness</h2>
           <p className="mt-1 text-sm text-ink-secondary">
             Whether the processor is healthy enough to be trusted right now — worker and chain state, not just process
             liveness (backend OPS-001).
           </p>
           {readiness.data ? (
             <div className="mt-3 space-y-2">
-              <StatusBadge status={readiness.data.status} />
+              <dl><div><dt className="text-ink-faint text-[11px] uppercase tracking-wide">Status</dt><dd className="mt-1"><StatusBadge status={readiness.data.status} /></dd></div></dl>
               {readiness.data.reasons?.length ? (
                 <ul className="space-y-2 text-sm">
                   {readiness.data.reasons.map((reason) => (
@@ -116,22 +117,22 @@ export function SystemHealth({ paydHost }: Readonly<{ paydHost: string }>) {
               )}
             </div>
           ) : (
-            <p className="mt-3 text-ink-faint">Not loaded.</p>
+            !readiness.isError ? <div className="mt-3 h-4 w-24 animate-pulse bg-raised" aria-label="Loading readiness" /> : null
           )}
           <ErrorNotice error={readiness.isError ? readiness.error : null} updatedAt={readiness.dataUpdatedAt} onReload={() => void readiness.refetch()} />
         </div>
       </div>
 
-      <div className="border border-border-subtle bg-panel p-4 text-sm">
-        <h2 className="font-semibold">/metrics — Prometheus</h2>
+      <div className="card text-sm">
+        <h2 className="card-title">/metrics — Prometheus</h2>
         <p className="mt-1 text-ink-secondary">
           Plain Prometheus text exposition. This dashboard does not fetch, parse, or render it — Prometheus is the
           right consumer for a time series (WNG-009, WSYS-062). It requires a valid payd API key on the request;
           opening the link below with no key returns 401.
         </p>
         <p className="mt-2">
-          <a href={`http://${paydHost}/metrics`} target="_blank" rel="noreferrer" className="font-mono text-severity-progress underline underline-offset-2">
-            http://{paydHost}/metrics
+          <a href={`http://${paydHost}/metrics`} target="_blank" rel="noreferrer" className="inline-flex cursor-pointer items-center gap-1 font-mono text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">
+            http://{paydHost}/metrics <ExternalLink aria-hidden="true" size={14} strokeWidth={1.75} />
           </a>
         </p>
         <p className="mt-1 text-xs text-ink-faint">
@@ -140,12 +141,12 @@ export function SystemHealth({ paydHost }: Readonly<{ paydHost: string }>) {
         </p>
       </div>
 
-      <div className="border border-border-subtle bg-panel p-4 text-sm">
-        <h2 className="font-semibold">API reference</h2>
+      <div className="card text-sm">
+        <h2 className="card-title">API reference</h2>
         <p className="mt-1 text-ink-secondary">The served OpenAPI document is the authority when these docs and the API disagree (WSYS-063).</p>
         <p className="mt-2">
-          <a href="/api/payd/openapi.yaml" target="_blank" rel="noreferrer" className="text-severity-progress underline underline-offset-2">
-            Open /openapi.yaml
+          <a href="/api/payd/openapi.yaml" target="_blank" rel="noreferrer" className="inline-flex cursor-pointer items-center gap-1 text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]">
+            Open /openapi.yaml <ExternalLink aria-hidden="true" size={14} strokeWidth={1.75} />
           </a>
         </p>
       </div>

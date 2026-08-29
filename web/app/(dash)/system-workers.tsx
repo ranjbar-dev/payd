@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CursorPager } from "@/components/data/cursor-pager";
@@ -52,24 +53,24 @@ function WorkerRow({ worker }: Readonly<{ worker: Worker }>) {
 
   return (
     <>
-      <td className="px-3 py-2">
+      <td className="td">
         <p className="font-mono tabular-nums">{worker.worker}</p>
-        <p className="mt-0.5 max-w-xs text-xs text-ink-secondary">{WORKER_INFO[worker.worker] ?? "Not described by this dashboard."}</p>
+        <p className="mt-0.5 line-clamp-2 max-w-xs text-[11px] text-ink-faint">{WORKER_INFO[worker.worker] ?? "Not described by this dashboard."}</p>
       </td>
-      <td className="px-3 py-2 font-mono tabular-nums"><Duration seconds={worker.expected_interval_seconds} /></td>
-      <td className={neverTicked || stale ? "px-3 py-2 text-severity-warning" : "px-3 py-2"}>
+      <td className="td text-right font-mono tabular-nums"><Duration seconds={worker.expected_interval_seconds} /></td>
+      <td className={neverTicked || stale ? "td text-right font-mono tabular-nums text-severity-warning" : "td text-right font-mono tabular-nums"}>
         {neverTicked ? (
-          <span>⚠ never ticked</span>
+          <span className="inline-flex items-center gap-1"><AlertTriangle aria-hidden="true" size={13} strokeWidth={1.75} />never ticked</span>
         ) : (
           <>
             <Timestamp seconds={worker.last_tick_at} /> · <Duration seconds={worker.seconds_since_tick} /> ago
-            {stale ? <span className="block">⚠ stalled — failing now (WSYS-004)</span> : null}
+            {stale ? <span className="mt-0.5 flex items-center justify-end gap-1 text-[11px]"><AlertTriangle aria-hidden="true" size={13} strokeWidth={1.75} />stalled — failing now (WSYS-004)</span> : null}
           </>
         )}
       </td>
-      <td className="px-3 py-2 font-mono tabular-nums">{worker.error_count}</td>
-      <td className="px-3 py-2 font-mono tabular-nums">{worker.restarts}</td>
-      <td className="px-3 py-2 text-ink-secondary">
+      <td className="td text-right font-mono tabular-nums">{worker.error_count}</td>
+      <td className="td text-right font-mono tabular-nums">{worker.restarts}</td>
+      <td className="td text-ink-secondary">
         {worker.last_error || "—"}
         {recovered ? <span className="mt-0.5 block text-xs text-severity-progress">Fresh tick, non-zero error count: failed once, recovered (WSYS-004). Sticky — stays visible until a future failure (WSYS-003, backend OPS-008).</span> : null}
       </td>
@@ -96,7 +97,8 @@ export function SystemWorkers() {
   };
 
   return (
-    <section className="space-y-3">
+    <section className="card space-y-3">
+      <h2 className="card-title">Worker health</h2>
       <p className="text-sm text-ink-secondary">
         <code className="font-mono text-xs">last_error</code> is sticky — it is not cleared on the next success, so
         a recovered fault stays visible until the next one (backend OPS-008, WSYS-003).
