@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, ExternalLink, Filter, Terminal, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -20,7 +21,7 @@ import { paydQueryOptions } from "@/lib/query";
 import { queryKeys } from "@/lib/query-keys";
 
 function Payers({ order }: Readonly<{ order: FundedOrder }>) {
-  return <div className="space-y-1">{order.payers.map((payer) => <AddressLink key={payer} address={payer} href={`/addresses/${encodeURIComponent(payer)}`} />)}</div>;
+  return <div className="space-y-1 text-[13px]">{order.payers.map((payer) => <AddressLink key={payer} address={payer} href={`/addresses/${encodeURIComponent(payer)}`} />)}</div>;
 }
 
 function ResolveAction({ order }: Readonly<{ order: FundedOrder }>) {
@@ -31,7 +32,52 @@ function ResolveAction({ order }: Readonly<{ order: FundedOrder }>) {
   const mutation = useMutation({ mutationFn: () => paydRequest<{ resolved: true }>(["orders", order.id, "resolve"], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution, resolution_note: note }) }), onSuccess: () => { client.setQueriesData({ queryKey: queryKeys.orders.fundedTerminalAll() }, (old: unknown) => old && typeof old === "object" && "orders" in old && Array.isArray((old as FundedOrderList).orders) ? { ...(old as FundedOrderList), orders: (old as FundedOrderList).orders.filter((item) => item.id !== order.id) } : old); void client.invalidateQueries({ queryKey: queryKeys.orders.all }); void client.invalidateQueries({ queryKey: queryKeys.stats() }); } });
   const payd = isPaydError(mutation.error) ? mutation.error : null;
   const withdrawalHref = `/withdrawals/new?from=${encodeURIComponent(order.address)}&to=${encodeURIComponent(order.payers[0] ?? "")}`;
-  return <><button type="button" className="border border-severity-warning px-2 py-1 text-xs" onClick={() => { mutation.reset(); setOpen(true); }}>Resolve</button><ConfirmDialog open={open} onClose={() => setOpen(false)} title="Record funded-terminal resolution" confirmLabel={`Record ${resolution}`} ready={note.trim().length > 0} onConfirm={async () => { try { await mutation.mutateAsync(); setOpen(false); } catch { /* The error is rendered; no automatic resubmission. */ } }} error={payd} apiText={<><p>payd order <code className="select-all font-mono">{order.id}</code> received <Amount value={order.received} asset={order.asset} /> at <code className="select-all font-mono">{order.address}</code>.</p><p className="mt-2 font-medium">This records a decision; it does not move any funds. Choosing refunded does not issue a refund. A refund is a separate withdrawal made afterwards from the deposit address.</p><p className="mt-2">This action is written to <code className="font-mono">audit_log</code>. No TOTP code is required.</p><label className="mt-3 grid gap-1 text-xs text-ink-secondary">Resolution<select value={resolution} onChange={(event) => setResolution(event.currentTarget.value)} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink"><option value="refunded">refunded</option><option value="written_off">written_off</option><option value="reattributed">reattributed</option></select></label><label className="mt-3 grid gap-1 text-xs text-ink-secondary">Resolution note (required)<textarea value={note} onChange={(event) => setNote(event.currentTarget.value)} rows={3} className="border border-border-strong bg-panel p-2 text-sm text-ink" /></label>{resolution === "refunded" ? <Link href={withdrawalHref} className="text-severity-progress underline underline-offset-2">Open a separate, pre-filled withdrawal</Link> : null}{payd ? <p role="alert" className="text-severity-warning">payd did not record the decision. Error code: <code className="select-all font-mono">{payd.code}</code></p> : null}</>} /></>;
+  return <>
+    <button
+      type="button"
+      className="btn btn-secondary h-7 px-2 text-xs"
+      disabled={mutation.isPending}
+      onClick={() => { mutation.reset(); setOpen(true); }}
+    >
+      <Check aria-hidden="true" size={14} strokeWidth={1.75} />
+      Resolve
+    </button>
+    <ConfirmDialog
+      open={open}
+      onClose={() => setOpen(false)}
+      title="Record funded-terminal resolution"
+      confirmLabel={`Record ${resolution}`}
+      ready={note.trim().length > 0}
+      onConfirm={async () => {
+        try {
+          await mutation.mutateAsync();
+          setOpen(false);
+        } catch {
+          /* The error is rendered; no automatic resubmission. */
+        }
+      }}
+      error={payd}
+      apiText={<>
+        <p>payd order <code className="select-all font-mono">{order.id}</code> received <Amount value={order.received} asset={order.asset} /> at <code className="select-all font-mono">{order.address}</code>.</p>
+        <p className="mt-2 font-medium">This records a decision; it does not move any funds. Choosing refunded does not issue a refund. A refund is a separate withdrawal made afterwards from the deposit address.</p>
+        <p className="mt-2">This action is written to <code className="font-mono">audit_log</code>. No TOTP code is required.</p>
+        <label className="field mt-3">
+          Resolution
+          <select value={resolution} onChange={(event) => setResolution(event.currentTarget.value)} className="input cursor-pointer">
+            <option value="refunded">refunded</option>
+            <option value="written_off">written_off</option>
+            <option value="reattributed">reattributed</option>
+          </select>
+        </label>
+        <label className="field mt-3">
+          Resolution note (required)
+          <textarea value={note} onChange={(event) => setNote(event.currentTarget.value)} rows={3} className="min-h-20 w-full rounded border border-border-subtle bg-raised p-2 text-[13px] text-ink focus-visible:border-[var(--focus-ring)] focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" />
+        </label>
+        {resolution === "refunded" ? <Link href={withdrawalHref} className="mt-3 inline-flex cursor-pointer items-center gap-1.5 text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"><ExternalLink aria-hidden="true" size={14} strokeWidth={1.75} />Open a separate, pre-filled withdrawal</Link> : null}
+        {payd ? <p role="alert" className="mt-3 text-severity-warning">payd did not record the decision. Error code: <code className="select-all font-mono">{payd.code}</code></p> : null}
+      </>}
+    />
+  </>;
 }
 
 export function FundedTerminalWorklist() {
@@ -50,5 +96,60 @@ export function FundedTerminalWorklist() {
   const failure = isPaydError(worklist.error) ? worklist.error : null;
   const empty = filter ? <EmptyState kind="search" title="No funded terminal orders match this filter" description="Change or clear the URL-backed filter to inspect unresolved funded orders." /> : <EmptyState kind="worklist" title="No unresolved funded orders" description="No customer money is sitting unresolved in a terminal order." />;
 
-  return <main className="mx-auto max-w-7xl space-y-4 p-4 lg:p-6"><header><p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-faint">Operations / Orders / Funded terminal</p><h1 className="mt-1 text-2xl font-semibold">Funded-terminal worklist</h1><p className="mt-1 text-sm text-ink-secondary">Oldest first. Age is the risk.</p></header><label className="grid max-w-md gap-1 text-xs text-ink-secondary">Filter order ID or payer address<input value={filter} onChange={(event) => setParams({ q: event.currentTarget.value })} className="border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" /></label>{filter ? <button type="button" className="text-left text-sm underline underline-offset-2" onClick={() => setParams({ q: "" })}>Clear filter</button> : null}<DataTable columns={[{ id: "order", label: "Order" }, { id: "status", label: "Status" }, { id: "asset", label: "Asset" }, { id: "received", label: "Received" }, { id: "payers", label: "Payer addresses" }, { id: "age", label: "Age" }, { id: "action", label: "Action" }]} rows={rows} rowKey={(order) => order.id} defaultSort="Oldest first by created time" caption="Unresolved funded terminal orders" loading={worklist.isLoading} emptyState={empty} renderRow={(order) => <><td className="px-3 py-2"><Link href={`/orders/${encodeURIComponent(order.id)}`}><EntityId value={order.id} /></Link></td><td className="px-3 py-2"><StatusBadge status={order.status} resolution={order.resolution} /></td><td className="px-3 py-2 font-mono">{order.asset}</td><td className="px-3 py-2"><Amount value={order.received} asset={order.asset} /></td><td className="px-3 py-2"><Payers order={order} /></td><td className="px-3 py-2"><Timestamp seconds={order.created_at} /></td><td className="px-3 py-2"><ResolveAction order={order} /></td></>} />{failure ? <ErrorState error={failure} copyByCode={{ unauthorized: "This dashboard session or its upstream scope is not authorised.", rate_limited: "Refresh has slowed because payd is rate limited.", upstream_unreachable: "payd could not be reached; the last good rows remain visible.", upstream_timeout: "payd did not answer in time; the last good rows remain visible." }} lastUpdatedAt={worklist.dataUpdatedAt || undefined} pollingIntervalMs={30_000} onRetry={() => void worklist.refetch()} /> : null}<CursorPager nextCursor={worklist.data?.next_cursor} hasResults={rows.length > 0} limit={limit} onNext={(next) => setParams({ cursor: next })} onStart={() => setParams({ cursor: "" })} onLimitChange={(next) => setParams({ limit: String(next) })} /></main>;
+  return <main className="page">
+    <header>
+      <p className="page-kicker"><Terminal aria-hidden="true" size={14} strokeWidth={1.75} />OPERATIONS / ORDERS / FUNDED TERMINAL</p>
+      <div className="mt-1 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="page-title">Funded-terminal worklist</h1>
+          <p className="mt-1 text-[13px] text-ink-secondary">Oldest first. Age is the risk.</p>
+        </div>
+      </div>
+    </header>
+
+    <section className="card space-y-3" aria-labelledby="funded-terminal-heading">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 id="funded-terminal-heading" className="card-title">Unresolved funds</h2>
+          <p className="mt-1 text-[13px] text-ink-secondary">Each payer address is copyable for a separate, deliberate refund workflow.</p>
+        </div>
+        {filter ? <button type="button" className="btn btn-ghost" onClick={() => setParams({ q: "" })}><X aria-hidden="true" size={14} strokeWidth={1.75} />Clear filter</button> : null}
+      </div>
+
+      <label className="field max-w-md">
+        <span className="flex items-center gap-1.5"><Filter aria-hidden="true" size={14} strokeWidth={1.75} />Filter order ID or payer address</span>
+        <input value={filter} onChange={(event) => setParams({ q: event.currentTarget.value })} className="input" />
+      </label>
+
+      <DataTable
+        columns={[
+          { id: "order", label: "Order" },
+          { id: "status", label: "Status" },
+          { id: "asset", label: "Asset" },
+          { id: "received", label: "Received", className: "text-right" },
+          { id: "payers", label: "Payer addresses" },
+          { id: "age", label: "Age", className: "text-right" },
+          { id: "action", label: "Action", className: "text-right" },
+        ]}
+        rows={rows}
+        rowKey={(order) => order.id}
+        defaultSort="Oldest first by created time"
+        caption="Unresolved funded terminal orders"
+        loading={worklist.isLoading}
+        emptyState={empty}
+        renderRow={(order) => <>
+          <td className="td whitespace-nowrap"><Link href={`/orders/${encodeURIComponent(order.id)}`} className="cursor-pointer transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"><EntityId value={order.id} /></Link></td>
+          <td className="td whitespace-nowrap"><StatusBadge status={order.status} resolution={order.resolution} /></td>
+          <td className="td font-mono tabular-nums">{order.asset}</td>
+          <td className="td text-right font-mono tabular-nums"><Amount value={order.received} asset={order.asset} /></td>
+          <td className="td"><Payers order={order} /></td>
+          <td className="td whitespace-nowrap text-right font-mono tabular-nums"><Timestamp seconds={order.created_at} /></td>
+          <td className="td text-right"><ResolveAction order={order} /></td>
+        </>}
+      />
+    </section>
+
+    {failure ? <ErrorState error={failure} copyByCode={{ unauthorized: "This dashboard session or its upstream scope is not authorised.", rate_limited: "Refresh has slowed because payd is rate limited.", upstream_unreachable: "payd could not be reached; the last good rows remain visible.", upstream_timeout: "payd did not answer in time; the last good rows remain visible." }} lastUpdatedAt={worklist.dataUpdatedAt || undefined} pollingIntervalMs={30_000} onRetry={() => void worklist.refetch()} /> : null}
+    <CursorPager nextCursor={worklist.data?.next_cursor} hasResults={rows.length > 0} limit={limit} onNext={(next) => setParams({ cursor: next })} onStart={() => setParams({ cursor: "" })} onLimitChange={(next) => setParams({ limit: String(next) })} />
+  </main>;
 }

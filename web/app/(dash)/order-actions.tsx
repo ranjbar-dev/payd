@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Check, X } from "lucide-react";
 import { useState } from "react";
 
 import { Amount } from "@/components/data/amount";
@@ -45,9 +46,9 @@ export function OrderActions({ order }: Readonly<{ order: Order }>) {
   const requestedTtl = Math.min(Math.max(1, ttl), maxTtl);
   const expiry = order.expires_at + requestedTtl;
 
-  return <section className="border border-border-subtle bg-panel p-4"><h2 className="font-semibold">Order actions</h2><p className="mt-1 text-sm text-ink-secondary">No TOTP code is required for these order actions.</p><div className="mt-3 flex flex-wrap gap-2">
-    <button type="button" className="border border-severity-warning px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50" disabled={cancelUnavailable.has(order.status)} onClick={() => { cancel.reset(); setCancelOpen(true); }}>Cancel order</button>
-    <button type="button" className="border border-border-strong px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50" disabled={terminal.has(order.status) || maxTtl === 0} onClick={() => { extend.reset(); setExtendOpen(true); }}>Extend expiry</button>
+  return <section className="card"><h2 className="card-title">Order actions</h2><p className="mt-2 text-sm text-ink-secondary">No TOTP code is required for these order actions.</p><div className="mt-3 flex flex-wrap gap-2">
+    <button type="button" className="btn btn-danger" disabled={cancelUnavailable.has(order.status)} onClick={() => { cancel.reset(); setCancelOpen(true); }}><X aria-hidden="true" size={14} strokeWidth={1.75} />Cancel order</button>
+    <button type="button" className="btn btn-secondary" disabled={terminal.has(order.status) || maxTtl === 0} onClick={() => { extend.reset(); setExtendOpen(true); }}><Check aria-hidden="true" size={14} strokeWidth={1.75} />Extend expiry</button>
   </div>
   {terminal.has(order.status) ? <p className="mt-2 text-sm text-ink-secondary">Extend is unavailable because this order is terminal.</p> : null}
   <MutationError error={cancel.error ?? extend.error} />
