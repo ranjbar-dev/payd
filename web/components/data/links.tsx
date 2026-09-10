@@ -1,6 +1,7 @@
 "use client";
 
-import { Copy, ExternalLink } from "lucide-react";
+import { Check, Copy, ExternalLink } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -11,16 +12,28 @@ function truncate(value: string, start = 6, end = 4) {
 }
 
 function CopyButton({ value }: Readonly<{ value: string }>) {
+  const [feedback, setFeedback] = useState("");
+  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timeout.current) clearTimeout(timeout.current); }, []);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(value); setFeedback("Copied"); }
+    catch { setFeedback("Copy unavailable. Select the full value to copy manually."); }
+    if (timeout.current) clearTimeout(timeout.current);
+    timeout.current = setTimeout(() => setFeedback(""), 3000);
+  };
   return (
+    <>
     <button
       type="button"
       className="btn btn-ghost ml-1 h-auto px-1 align-middle"
-      aria-label="Copy full value"
-      title="Copy full value"
-      onClick={() => void navigator.clipboard.writeText(value)}
+      aria-label={feedback || "Copy full value"}
+      title={feedback || "Copy full value"}
+      onClick={(event) => { event.preventDefault(); event.stopPropagation(); void copy(); }}
     >
-      <Copy aria-hidden="true" size={12} strokeWidth={1.75} />
+      {feedback === "Copied" ? <Check aria-hidden="true" size={14} strokeWidth={1.75} className="text-severity-success" /> : <Copy aria-hidden="true" size={14} strokeWidth={1.75} />}
     </button>
+    <span role="status" className="sr-only">{feedback}</span>
+    </>
   );
 }
 

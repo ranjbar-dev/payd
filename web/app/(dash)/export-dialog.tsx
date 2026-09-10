@@ -59,8 +59,8 @@ export function ExportDialog({
   return <div className="card text-sm" role="group" aria-label={`Export ${label[kind]} as CSV`}>
     <div className="flex items-start justify-between gap-3"><h3 className="card-title">Export {label[kind]} as CSV</h3><button type="button" className="btn btn-ghost px-1" onClick={() => setOpen(false)}><X aria-hidden="true" size={14} strokeWidth={1.75} />Close</button></div>
     <p className="mt-2 text-ink-secondary">Applied filters: {applied.length ? applied.map(([key, value]) => <code key={key} className="mr-2 font-mono text-xs text-ink">{key}={value}</code>) : "none — this exports the unfiltered list"}.</p>
-    <label htmlFor={capId} className="mt-3 grid gap-1 text-xs text-ink-secondary">Row cap (1–100,000)
-      <input id={capId} type="number" min={1} max={100000} step={1} inputMode="numeric" value={cap} onChange={(event) => setCap(event.currentTarget.value)} className="w-40 border border-border-strong bg-panel px-2 py-1.5 text-sm text-ink" />
+    <label htmlFor={capId} className="mt-3 field">Row cap (1–100,000)
+      <input id={capId} type="number" min={1} max={100000} step={1} inputMode="numeric" value={cap} onChange={(event) => setCap(event.currentTarget.value)} className="w-40 input" />
     </label>
     {!capValid ? <p className="mt-1 text-severity-warning" role="alert">Enter a whole number from 1 to 100,000.</p> : null}
     {/* WRPT-035: a capped export must never be mistaken for a complete one. */}

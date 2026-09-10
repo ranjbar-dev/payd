@@ -79,8 +79,8 @@ export function WithdrawalDetail({ id }: Readonly<{ id: string }>) {
   const address = (value: string) => <AddressLink address={value} href={`/addresses/${encodeURIComponent(value)}`} />;
   const resourceQuery = encodeURIComponent(id);
 
-  if (!withdrawal && withdrawalQuery.isLoading) return <main className="page"><LoadingState /></main>;
-  if (!withdrawal) return <main className="page"><ReadError error={withdrawalQuery.error} updatedAt={withdrawalQuery.dataUpdatedAt} reload={() => void withdrawalQuery.refetch()} /></main>;
+  if (!withdrawal && withdrawalQuery.isLoading) return <main className="page"><header><h1 className="page-title">Withdrawal detail</h1></header><LoadingState /></main>;
+  if (!withdrawal) return <main className="page"><header><h1 className="page-title">Withdrawal detail</h1><p className="mt-2 text-ink-secondary">This withdrawal could not be loaded. Check the error below or return to the withdrawals list.</p></header><ReadError error={withdrawalQuery.error} updatedAt={withdrawalQuery.dataUpdatedAt} reload={() => void withdrawalQuery.refetch()} /></main>;
 
   return <main className="page"><header><p className="page-kicker"><Banknote aria-hidden="true" size={14} strokeWidth={1.75} />Operations / Withdrawals / Detail</p><div className="mt-1 flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap items-center gap-3"><h1 className="page-title">Withdrawal <EntityId value={withdrawal.id} full /></h1><StatusBadge status={withdrawal.status} /></div><RefreshButton /></div></header>
     {withdrawal.status === "needs_operator" ? <><AmbiguousOutcome withdrawal={withdrawal} /><WithdrawalResolve withdrawal={withdrawal} /></> : null}

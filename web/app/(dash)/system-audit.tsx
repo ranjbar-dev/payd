@@ -129,11 +129,11 @@ export function SystemAudit() {
         Attribution to a specific operator comes from the dashboard&apos;s own application logs, not this table.
       </p>
       <TableFilters active={active} onClear={() => setParams({ audit_actor: "", audit_action: "", audit_subject: "", audit_from: "", audit_to: "" })}>
-        <label className="grid gap-1 text-xs text-ink-secondary">Actor<input value={actor} onChange={(event) => setParams({ audit_actor: event.currentTarget.value })} className="input h-8" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">Action<input value={action} onChange={(event) => setParams({ audit_action: event.currentTarget.value })} className="input h-8" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">Subject<input value={subject} onChange={(event) => setParams({ audit_subject: event.currentTarget.value })} className="input h-8" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">From (UTC)<input type="date" value={fromDate} onChange={(event) => setParams({ audit_from: event.currentTarget.value })} className="input h-8" /></label>
-        <label className="grid gap-1 text-xs text-ink-secondary">To (UTC)<input type="date" value={toDate} onChange={(event) => setParams({ audit_to: event.currentTarget.value })} className="input h-8" /></label>
+        <label className="field">Actor<input value={actor} onChange={(event) => setParams({ audit_actor: event.currentTarget.value })} className="input" /></label>
+        <label className="field">Action<input value={action} onChange={(event) => setParams({ audit_action: event.currentTarget.value })} className="input" /></label>
+        <label className="field">Subject<input value={subject} onChange={(event) => setParams({ audit_subject: event.currentTarget.value })} className="input" /></label>
+        <label className="field">From (UTC)<input type="date" value={fromDate} onChange={(event) => setParams({ audit_from: event.currentTarget.value })} className="input" /></label>
+        <label className="field">To (UTC)<input type="date" value={toDate} onChange={(event) => setParams({ audit_to: event.currentTarget.value })} className="input" /></label>
       </TableFilters>
       <DataTable
         columns={[

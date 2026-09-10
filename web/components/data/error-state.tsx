@@ -37,8 +37,8 @@ export function ErrorState({
         className="border border-severity-warning bg-[var(--severity-warning-bg)] p-3"
         role="alert"
       >
-        <div className="flex items-center gap-2">
-          <AlertTriangle aria-hidden="true" size={20} strokeWidth={1.75} className="text-severity-critical" />
+        <div className="flex items-start gap-2">
+          <AlertTriangle aria-hidden="true" size={20} strokeWidth={1.75} className="shrink-0 text-severity-warning" />
           <p className="font-medium text-ink">
             {copyByCode[error.code] ?? "An unrecognised error was returned."}
           </p>
@@ -48,7 +48,7 @@ export function ErrorState({
           <code className="select-all font-mono text-ink">{error.code}</code>
         </p>
         {error.details != null ? (
-          <pre className="mt-2 overflow-auto border-t border-border-subtle pt-2 text-xs text-ink-secondary">
+          <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle pt-2 text-xs text-ink-secondary">
             {JSON.stringify(error.details, null, 2)}
           </pre>
         ) : null}

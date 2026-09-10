@@ -68,9 +68,9 @@ export function AlarmNavigation() {
     : errorCode ? `Stats may be stale (${errorCode}).` : null;
 
   return (
-    <div className="mt-auto border-t border-border-subtle p-3">
+    <div className="sidebar-alarms">
       <p className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Alarms</p>
-      <div className="space-y-2">
+      <div>
         <Link className={`${counts.needsOperator > 0 ? "needs-operator" : ""} block rounded-sm focus-visible:outline-offset-2`} href="/withdrawals/needs-operator">
           <AlarmCounter label="needs_operator" count={counts.needsOperator} severity="critical" />
         </Link>
@@ -88,7 +88,7 @@ export function AlarmNavigation() {
         </Link>
       </div>
       {errorMessage ? <p role="status" className="mt-2 text-xs text-severity-warning">⚠ {errorMessage}</p> : null}
-      <div className="mt-4 border-t border-border-subtle px-1 pt-3"><UtcClock /></div>
+      <div className="sidebar-clock"><UtcClock /></div>
     </div>
   );
 }

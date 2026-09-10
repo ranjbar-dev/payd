@@ -72,7 +72,7 @@ function ResolveAction({ order }: Readonly<{ order: FundedOrder }>) {
         </label>
         <label className="field mt-3">
           Resolution note (required)
-          <textarea value={note} onChange={(event) => setNote(event.currentTarget.value)} rows={3} className="min-h-20 w-full rounded border border-border-subtle bg-raised p-2 text-[13px] text-ink focus-visible:border-[var(--focus-ring)] focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" />
+          <textarea value={note} onChange={(event) => setNote(event.currentTarget.value)} rows={3} className="input" />
         </label>
         {resolution === "refunded" ? <Link href={withdrawalHref} className="mt-3 inline-flex cursor-pointer items-center gap-1.5 text-severity-progress underline underline-offset-2 transition-colors duration-150 hover:text-ink focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"><ExternalLink aria-hidden="true" size={14} strokeWidth={1.75} />Open a separate, pre-filled withdrawal</Link> : null}
         {payd ? <p role="alert" className="mt-3 text-severity-warning">payd did not record the decision. Error code: <code className="select-all font-mono">{payd.code}</code></p> : null}

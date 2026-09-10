@@ -38,6 +38,7 @@ export function NavLinks() {
           <li key={href}>
             <Link
               href={href}
+              onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); }}
               aria-current={active ? "page" : undefined}
               className={`flex items-center gap-2 rounded px-3 py-1.5 text-[13px] transition-colors duration-150 focus-visible:outline-offset-[-2px] ${active ? "bg-accent-bg text-ink shadow-[inset_2px_0_0_var(--accent)]" : "text-ink-secondary hover:bg-raised hover:text-ink"}`}
             >

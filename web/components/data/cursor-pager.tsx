@@ -19,7 +19,7 @@ export function CursorPager({
 }>) {
   return (
     <nav
-      className="flex flex-wrap items-center gap-2 text-sm"
+      className="flex flex-wrap items-center gap-3 border-t border-border-subtle pt-3 text-sm"
       aria-label="Cursor pagination"
     >
       <button
@@ -28,7 +28,7 @@ export function CursorPager({
         onClick={onStart}
       >
         <ChevronLeft aria-hidden="true" size={14} strokeWidth={1.75} />
-        Prev
+        First page
       </button>
       {onLimitChange ? (
         <label className="field ml-auto">

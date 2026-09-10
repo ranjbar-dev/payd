@@ -39,7 +39,7 @@ Keep the existing token names. Values below; severity tokens unchanged.
 | `--border-strong` | `#333c49` | header underline, secondary button border |
 | `--text-primary` | `#e8edf2` | body |
 | `--text-secondary` | `#a3aebc` | labels, secondary cells |
-| `--text-faint` | `#68727f` | meta, column headers, disabled |
+| `--text-faint` | `#8995a5` | meta, column headers, disabled |
 | `--focus-ring` | `#84c5ff` | keyboard focus |
 | `--accent` | `#f59e0b` | primary action bg, active nav marker |
 | `--accent-hover` | `#fbbf24` | primary action hover |
@@ -138,3 +138,13 @@ skeletons for loading (never a blank panel). No infinite decorative animation.
 - [ ] Table rows ≤ 2 lines, header sticky, numerics right + mono.
 - [ ] Loading = skeleton; empty = icon + copy; error = `AlertTriangle`.
 - [ ] `npm run lint` (tsc) clean; page renders; no console error in Playwright.
+
+
+## Responsive refinement — September 2026
+
+- Retain the fixed 240px sidebar at 1024px and wider. Below that, use the native Navigation disclosure, keeping all four alarms visible outside it and the UTC clock in the brand header.
+- Inputs use a 36px desktop height, sentence-case 12px labels, and strong borders. Buttons retain the compact desktop size; touch controls use a 44px minimum height below 1024px.
+- Large filter groups can collapse on mobile. The payment quick lookup stays outside that disclosure. Applied filters remain indicated when collapsed.
+- Tables scroll inside a labelled, keyboard-focusable region, bounded to 70vh. Headers and the first identity column stay visible. Row actions must ignore nested interactive controls.
+- Nested routes include a return breadcrumb, including loading and missing-record states. Shared modal dialogs use native focus containment and viewport bounds.
+- See [UI review and validation](docs/ui-review-2026-09-10.md) for coverage and verification limits.

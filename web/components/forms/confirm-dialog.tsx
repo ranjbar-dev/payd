@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { TotpField } from "./totp-field";
@@ -31,6 +32,7 @@ export function ConfirmDialog({
   error?: { code: string; details?: { totp_consumed?: boolean } } | null;
 }>) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const [totp, setTotp] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [outcomeUnknown, setOutcomeUnknown] = useState(false);
@@ -78,14 +80,15 @@ export function ConfirmDialog({
   return (
     <dialog
       ref={dialog}
-      className="card z-50 w-full max-w-lg p-0 text-ink backdrop:bg-black/60"
+      className="card confirm-dialog z-50 w-full max-w-lg p-0 text-ink backdrop:bg-black/60"
+      aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
         if (!submitting) onClose();
       }}
     >
       <div className="border-b border-border-subtle px-5 py-4">
-        <h2 className="font-semibold">{title}</h2>
+        <h2 id={titleId} className="text-[18px] font-semibold">{title}</h2>
       </div>
       <div className="space-y-4 px-5 py-4">
         <div className="border border-border-subtle bg-inset p-3 text-sm">
@@ -111,7 +114,7 @@ export function ConfirmDialog({
           </p>
         ) : null}
       </div>
-      <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
+      <div className="flex flex-wrap justify-end gap-2 border-t border-border-subtle px-5 py-4">
         <button
           type="button"
           className="btn btn-secondary"
@@ -126,6 +129,7 @@ export function ConfirmDialog({
           disabled={disabled}
           onClick={() => void submit()}
         >
+          {submitting ? <Loader2 aria-hidden="true" size={14} className="animate-spin" /> : null}
           {submitting ? "Submitting…" : confirmLabel}
         </button>
       </div>

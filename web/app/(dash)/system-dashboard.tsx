@@ -59,7 +59,7 @@ export function SystemDashboard({
           tier D — manual refresh. This is a page you open when something is wrong, not one you watch.
         </p></div><RefreshButton /></div>
       </header>
-      <nav className="flex flex-wrap gap-1 border-b border-border-subtle" aria-label="System tabs">
+      <nav className="section-tabs" aria-label="System tabs">
         {TABS.map(([id, label]) => (
           <Link
             key={id}
